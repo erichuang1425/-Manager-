@@ -32,6 +32,8 @@ class UIMixin:
         start = time.perf_counter()
         self._render_count += 1
         self.grid.set_games(self._filtered)
+        if hasattr(self, "_update_dashboard_cards"):
+            self._update_dashboard_cards()
         if self._selected_game_id is not None:
             g = self._get_game(self._selected_game_id)
             self.details.show_game(g)

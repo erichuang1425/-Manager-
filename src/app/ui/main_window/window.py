@@ -84,7 +84,7 @@ class MainWindow(
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Game Library Manager")
-        self.resize(1200, 750)
+        self.resize(1536, 864)
         self._log = get_logger("ui.main")
         self._log_rate = RateLimiter()
         self._render_count = 0
@@ -200,8 +200,11 @@ class MainWindow(
         self._build_startup_overlay(root)
         self._set_startup_status("Loading library\u2026")
 
-        # -- Header bar (slim, branded) --
-        self._build_header_bar(outer, theme)
+        root.setStyleSheet(
+            f"QWidget {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, "
+            f"stop:0 {theme.bg.name(QColor.HexArgb)}, stop:0.55 {theme.surface_sunken.name(QColor.HexArgb)}, "
+            f"stop:1 rgba({theme.accent.red()},{theme.accent.green()},{theme.accent.blue()},55)); }}"
+        )
 
         # -- Main body: sidebar | content | details --
         body = QHBoxLayout()
@@ -241,16 +244,13 @@ class MainWindow(
 
         outer.addWidget(splitter, 1)
 
-        # -- Footer status bar --
-        self._build_footer_bar(outer, theme)
-
         # Restore splitter sizes
         sizes = self._settings.get("splitter_sizes")
         if isinstance(sizes, list) and len(sizes) == 3:
             splitter.setSizes([int(x) for x in sizes])
         else:
             # Sidebar expanded, details hidden by default to maximize grid space
-            splitter.setSizes([220, self.width() - 220, 0])
+            splitter.setSizes([230, max(700, self.width() - 610), 380])
 
     def _build_header_bar(self, outer: QVBoxLayout, theme) -> None:
         """Build the slim branded header bar, scaled for DPI and font size."""
@@ -359,29 +359,100 @@ class MainWindow(
         """Build the center content area with context toolbar and grid."""
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(theme.spacing_lg, 0, theme.spacing_lg, 0)
-        content_layout.setSpacing(0)
+        content_layout.setContentsMargins(theme.spacing_xl, theme.spacing_lg, theme.spacing_lg, theme.spacing_lg)
+        content_layout.setSpacing(theme.spacing_md)
         content.setMinimumWidth(480)
 
-        # -- Single context toolbar (replaces the old two-row control area) --
+        # -- Top bar: search left, view/filter controls right (matches compact dashboard layout) --
+        topbar = QHBoxLayout()
+        topbar.setContentsMargins(0, 0, 0, 0)
+        topbar.setSpacing(theme.spacing_md)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(f" {AppIcons.ACT_SEARCH}  Search your library…")
+        self.search.setToolTip(
+            "Search by title, tags, or notes.\n"
+            "Advanced: status:playing, tag:rpg, rating:>7, has:source"
+        )
+        self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(420)
+        self.search.setMaximumWidth(620)
+        self.search.setMinimumHeight(44)
+        self.search.setStyleSheet(
+            f"QLineEdit {{ background: {theme.surface.name(QColor.HexArgb)}; "
+            f"border: 1px solid {theme.outline.name(QColor.HexArgb)}; "
+            f"border-radius: {theme.radius_md}px; padding: 0 18px; "
+            f"color: {theme.text.name()}; font-size: 13px; }} "
+            f"QLineEdit:focus {{ border-color: {theme.accent.name()}; }}"
+        )
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(300)
+        self._search_debounce.timeout.connect(self._apply_search)
+        self.search.textChanged.connect(self._on_search_text_changed)
+        topbar.addWidget(self.search, 1)
+        topbar.addStretch(1)
+
+        self.filter_btn = self._build_filter_popover(theme)
+        self.view_btn = self._build_view_popover(theme)
+        topbar.addWidget(self.filter_btn)
+        topbar.addWidget(self.view_btn)
+        self._build_tools_menu(theme)
+        topbar.addWidget(self.tools_btn)
+        content_layout.addLayout(topbar)
+
+        hero = QFrame()
+        hero.setMinimumHeight(220)
+        hero.setMaximumHeight(260)
+        hero.setStyleSheet(
+            f"QFrame {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, "
+            f"stop:0 rgba(9,13,22,235), stop:0.52 rgba(22,37,48,220), "
+            f"stop:1 rgba({theme.accent.red()},{theme.accent.green()},{theme.accent.blue()},85)); "
+            f"border: 1px solid {theme.outline.name(QColor.HexArgb)}; "
+            f"border-radius: {theme.radius_lg}px; }} QLabel {{ background: transparent; border: none; }}"
+        )
+        hero_l = QVBoxLayout(hero)
+        hero_l.setContentsMargins(30, 24, 30, 24)
+        kicker = QLabel("FEATURED")
+        kicker.setStyleSheet(section_header_style(theme) + "padding:0;")
+        hero_title = QLabel("Elden Ring")
+        hero_title.setStyleSheet(f"font-size: 36px; font-weight: 700; color: {theme.text.name()};")
+        hero_desc = QLabel("A vast world of mystery and peril, where your choices shape the legend you become.")
+        hero_desc.setWordWrap(True)
+        hero_desc.setMaximumWidth(430)
+        hero_desc.setStyleSheet(f"font-size: 14px; color: {theme.text.name()};")
+        hero_actions = QHBoxLayout()
+        hero_actions.setSpacing(theme.spacing_sm)
+        hero_launch = QPushButton(f"{AppIcons.ACT_PLAY}  Launch")
+        hero_launch.setStyleSheet(primary_btn_style(theme))
+        hero_details = QPushButton(f"{AppIcons.UI_DETAILS}  Details")
+        hero_details.setStyleSheet(secondary_btn_style(theme))
+        hero_actions.addWidget(hero_launch)
+        hero_actions.addWidget(hero_details)
+        hero_actions.addStretch(1)
+        hero_l.addWidget(kicker)
+        hero_l.addStretch(1)
+        hero_l.addWidget(hero_title)
+        hero_l.addWidget(hero_desc)
+        hero_l.addSpacing(theme.spacing_md)
+        hero_l.addLayout(hero_actions)
+        content_layout.addWidget(hero)
+
+        # -- Library controls --
         toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(0, theme.spacing_sm, 0, theme.spacing_sm)
+        toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(theme.spacing_sm)
 
-        # Primary actions
         self.scan_btn = QPushButton(f"{AppIcons.ACT_SCAN}  Scan")
-        self.scan_btn.setStyleSheet(primary_btn_style(theme))
+        self.scan_btn.setStyleSheet(toolbar_btn_style(theme))
         self.scan_btn.setCursor(Qt.PointingHandCursor)
         self.scan_btn.setToolTip("Scan shortcuts root folder")
         self.scan_btn.clicked.connect(self._on_scan_clicked)
-        toolbar.addWidget(self.scan_btn)
-
         self.check_updates_btn = QToolButton()
         self.check_updates_btn.setText(f"{AppIcons.NAV_UPDATES}  Updates")
         self.check_updates_btn.setPopupMode(QToolButton.MenuButtonPopup)
         self.check_updates_btn.setStyleSheet(toolbar_btn_style(theme))
         self.check_updates_btn.setCursor(Qt.PointingHandCursor)
-        self.check_updates_btn.setToolTip("Check for game updates")
         self.check_updates_btn.clicked.connect(self._on_check_updates_fetch)
         updates_menu = QMenu(self)
         act_fetch = QAction("Background fetch && parse", self)
@@ -391,66 +462,27 @@ class MainWindow(
         updates_menu.addAction(act_fetch)
         updates_menu.addAction(act_open)
         self.check_updates_btn.setMenu(updates_menu)
+
+        self.pill_all = QPushButton("Your Library")
+        self.pill_missing = QPushButton("Missing")
+        self.pill_updates = QPushButton("Updates")
+        self.pill_source = QPushButton("Source")
+        for i, btn in enumerate((self.pill_all, self.pill_missing, self.pill_updates, self.pill_source)):
+            pos = "left" if i == 0 else ("right" if i == 3 else "mid")
+            btn.setCheckable(True); btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(segmented_btn_style(theme, pos)); btn.clicked.connect(self._on_quick_filter)
+            toolbar.addWidget(btn)
+        toolbar.addStretch(1)
+        toolbar.addWidget(self.scan_btn)
         toolbar.addWidget(self.check_updates_btn)
 
-        toolbar.addWidget(self._toolbar_separator(theme))
-
-        # Quick-filter segmented control (keeps the same pill widgets/handlers)
-        self.pill_all = QPushButton("All")
-        self.pill_all.setToolTip("Show all games")
-        self.pill_missing = QPushButton("Missing")
-        self.pill_missing.setToolTip("Games with missing shortcuts")
-        self.pill_updates = QPushButton("Updates")
-        self.pill_updates.setToolTip("Games with available updates")
-        self.pill_source = QPushButton("Source")
-        self.pill_source.setToolTip("Games with a source URL")
-        seg = QHBoxLayout()
-        seg.setContentsMargins(0, 0, 0, 0)
-        seg.setSpacing(0)
-        pills = [self.pill_all, self.pill_missing, self.pill_updates, self.pill_source]
-        for i, btn in enumerate(pills):
-            pos = "left" if i == 0 else ("right" if i == len(pills) - 1 else "mid")
-            btn.setCheckable(True)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(segmented_btn_style(theme, pos))
-            btn.clicked.connect(self._on_quick_filter)
-            seg.addWidget(btn)
-        toolbar.addLayout(seg)
-
-        toolbar.addStretch(1)
-
-        # Filter popover (hosts status / confidence / type filters + tag + clear)
-        self.filter_btn = self._build_filter_popover(theme)
-        toolbar.addWidget(self.filter_btn)
-
-        # View popover (hosts sort + layout + browse mode)
-        self.view_btn = self._build_view_popover(theme)
-        toolbar.addWidget(self.view_btn)
-
-        toolbar.addWidget(self._toolbar_separator(theme))
-
-        # Panel toggles — compact icon-only buttons
-        self.focus_btn = QPushButton(AppIcons.UI_FOCUS)
-        self.focus_btn.setToolTip("Focus mode — full-width grid (hide sidebar & details)")
-        self.details_toggle = QToolButton()
-        self.details_toggle.setText(AppIcons.UI_DETAILS)
-        self.details_toggle.setToolTip("Show/hide details panel (Ctrl+D)")
-        self.select_btn = QPushButton(AppIcons.UI_SELECT)
-        self.select_btn.setToolTip("Multi-select mode (Ctrl+Click)")
+        self.focus_btn = QPushButton(AppIcons.UI_FOCUS); self.details_toggle = QToolButton(); self.details_toggle.setText(AppIcons.UI_DETAILS); self.select_btn = QPushButton(AppIcons.UI_SELECT)
         for tog in (self.focus_btn, self.details_toggle, self.select_btn):
-            tog.setCheckable(True)
-            tog.setCursor(Qt.PointingHandCursor)
-            tog.setFixedSize(30, 30)
-            tog.setStyleSheet(icon_btn_style(theme))
-        self.focus_btn.setChecked(self._focus_mode)
-        self.focus_btn.clicked.connect(self._toggle_focus_mode)
-        self.details_toggle.setChecked(self._details_visible)
-        self.details_toggle.clicked.connect(self._toggle_details_panel)
+            tog.setCheckable(True); tog.setCursor(Qt.PointingHandCursor); tog.setFixedSize(34, 34); tog.setStyleSheet(icon_btn_style(theme))
+        self.focus_btn.setChecked(self._focus_mode); self.focus_btn.clicked.connect(self._toggle_focus_mode)
+        self.details_toggle.setChecked(self._details_visible); self.details_toggle.clicked.connect(self._toggle_details_panel)
         self.select_btn.clicked.connect(self._toggle_multi_select_mode)
-        toolbar.addWidget(self.focus_btn)
-        toolbar.addWidget(self.details_toggle)
-        toolbar.addWidget(self.select_btn)
-
+        toolbar.addWidget(self.focus_btn); toolbar.addWidget(self.details_toggle); toolbar.addWidget(self.select_btn)
         content_layout.addLayout(toolbar)
 
         # Filter chips bar
@@ -504,6 +536,8 @@ class MainWindow(
         self._apply_saved_widget_prefs()
 
         content_layout.addWidget(self.grid, 1)
+        self.dashboard_cards = self._build_dashboard_cards(theme)
+        content_layout.addWidget(self.dashboard_cards)
         content_layout.addWidget(self.health, 1)
         content_layout.addWidget(self.updates, 1)
         self.health.hide()
@@ -524,6 +558,90 @@ class MainWindow(
         self._rebuild_sidebar()
 
         return content
+
+
+    def _build_dashboard_cards(self, theme) -> QWidget:
+        """Build the bottom dashboard summary strip from the dark reference."""
+        wrap = QWidget()
+        row = QHBoxLayout(wrap)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(theme.spacing_md)
+
+        def card(title: str, icon: str) -> tuple[QFrame, QVBoxLayout, QLabel]:
+            frame = QFrame()
+            frame.setStyleSheet(
+                f"QFrame {{ background: {theme.card.name(QColor.HexArgb)}; "
+                f"border: 1px solid {theme.card_border.name(QColor.HexArgb)}; "
+                f"border-radius: {theme.radius_lg}px; }} "
+                f"QFrame QLabel {{ background: transparent; border: none; }}"
+            )
+            frame.setMinimumHeight(118)
+            layout = QVBoxLayout(frame)
+            layout.setContentsMargins(theme.spacing_lg, theme.spacing_md, theme.spacing_lg, theme.spacing_md)
+            layout.setSpacing(theme.spacing_xs)
+            header = QLabel(f"{icon}  {title}")
+            header.setStyleSheet(
+                f"font-size: 12px; font-weight: 700; letter-spacing: 1px; "
+                f"color: {theme.text.name()}; text-transform: uppercase;"
+            )
+            layout.addWidget(header)
+            body = QLabel("")
+            body.setWordWrap(True)
+            body.setStyleSheet(f"font-size: 13px; color: {theme.text_muted.name()}; line-height: 130%;")
+            layout.addWidget(body, 1)
+            return frame, layout, body
+
+        recent_frame, _, self.recent_activity_body = card("Recent Activity", AppIcons.NAV_UPDATES)
+        updates_frame, updates_layout, self.update_summary_body = card("Update Summary", AppIcons.NAV_UPDATES)
+        self.update_summary_btn = QPushButton("View updates")
+        self.update_summary_btn.setStyleSheet(primary_btn_style(theme))
+        self.update_summary_btn.setCursor(Qt.PointingHandCursor)
+        self.update_summary_btn.clicked.connect(lambda: self.sidebar.set_selected("updates"))
+        updates_layout.addWidget(self.update_summary_btn, 0, Qt.AlignRight)
+        health_frame, _, self.health_overview_body = card("Health Overview", AppIcons.NAV_HEALTH)
+
+        row.addWidget(recent_frame, 1)
+        row.addWidget(updates_frame, 1)
+        row.addWidget(health_frame, 1)
+        return wrap
+
+    def _update_dashboard_cards(self) -> None:
+        """Refresh dashboard cards from the same library data as old views."""
+        if not hasattr(self, "recent_activity_body"):
+            return
+
+        recent = sorted(
+            [g for g in self._all_games if getattr(g, "last_played", None)],
+            key=lambda g: g.last_played,
+            reverse=True,
+        )[:2]
+        if recent:
+            self.recent_activity_body.setText("\n".join(f"Played {g.title}" for g in recent))
+        else:
+            self.recent_activity_body.setText("No recent launches yet. Select a game and press Launch to start tracking activity.")
+
+        update_games = [
+            g for g in self._all_games
+            if getattr(g, "source_version_raw", "")
+            and getattr(g, "installed_version_raw", "")
+            and g.source_version_raw != g.installed_version_raw
+        ]
+        names = ", ".join(g.title for g in update_games[:2])
+        if update_games:
+            suffix = f"\n{names}" if names else ""
+            self.update_summary_body.setText(f"{len(update_games)} updates available{suffix}")
+        else:
+            self.update_summary_body.setText("No tracked updates available. Check Updates to refresh source versions.")
+
+        missing_shortcuts = sum(1 for g in self._all_games if not getattr(g, "shortcut_path", ""))
+        missing_sources = sum(1 for g in self._all_games if not getattr(g, "source_url", ""))
+        issues = missing_shortcuts + missing_sources
+        if issues:
+            self.health_overview_body.setText(
+                f"{issues} items need attention. {missing_shortcuts} missing shortcuts, {missing_sources} missing sources."
+            )
+        else:
+            self.health_overview_body.setText(f"Good. {len(self._all_games)} games checked and no basic issues found.")
 
     # ------------------------------------------------------------------ #
     #  Toolbar popovers (Filter / View)

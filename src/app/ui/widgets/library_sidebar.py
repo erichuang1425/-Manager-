@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QHBoxLayout, QPushButton, QMenu, QSizePolicy,
 )
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QColor
 
 from app.models import Collection
 from app.services.collection_engine import apply_collection
@@ -47,15 +47,15 @@ class LibrarySidebar(QWidget):
         self.setMaximumWidth(theme.sidebar_width_max)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, theme.spacing_sm, 0, theme.spacing_sm)
-        layout.setSpacing(0)
+        layout.setContentsMargins(theme.spacing_md, theme.spacing_lg, theme.spacing_md, theme.spacing_lg)
+        layout.setSpacing(theme.spacing_sm)
 
         # Sidebar header
         header = QHBoxLayout()
         header.setContentsMargins(theme.spacing_lg, theme.spacing_sm, theme.spacing_md, theme.spacing_md)
-        self._title_label = QLabel("Library")
+        self._title_label = QLabel(f"{AppIcons.NAV_LIBRARY}  Game Library\nManager")
         self._title_label.setStyleSheet(
-            f"font-size: 18px; font-weight: 700; color: {theme.text.name()}; "
+            f"font-size: 16px; font-weight: 700; color: {theme.text.name()}; line-height: 125%; "
             f"background: transparent; border: none;"
         )
         self._title_label.setMinimumWidth(0)
@@ -90,6 +90,15 @@ class LibrarySidebar(QWidget):
         self.list.dropEvent = self._drop_event
 
         layout.addWidget(self.list, 1)
+
+        help_card = QLabel("All your games.\nOrganized and healthy.\n\nWe manage shortcut-based libraries, updates, health checks, and notes so you can just play.")
+        help_card.setWordWrap(True)
+        help_card.setStyleSheet(
+            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {theme.surface_alt.name(QColor.HexArgb)}, stop:1 rgba({theme.accent.red()},{theme.accent.green()},{theme.accent.blue()},38)); "
+            f"border: 1px solid {theme.outline.name(QColor.HexArgb)}; border-radius: {theme.radius_lg}px; "
+            f"padding: {theme.spacing_lg}px; color: {theme.text.name()}; font-size: 12px;"
+        )
+        layout.addWidget(help_card)
 
         # New collection button at bottom
         btn_row = QHBoxLayout()
@@ -312,7 +321,7 @@ class LibrarySidebar(QWidget):
         self, icon: str, label: str, count: int,
         key: str, fm, max_w: int,
     ) -> None:
-        count_str = f"  ({count})" if count > 0 else ""
+        count_str = ""
         display = f"{icon}  {label}{count_str}"
         elided = fm.elidedText(display, Qt.ElideRight, max_w)
         item = QListWidgetItem(elided)

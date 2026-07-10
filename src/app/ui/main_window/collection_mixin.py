@@ -129,6 +129,7 @@ class CollectionMixin:
         grid = getattr(self, "grid", None)
         health = getattr(self, "health", None)
         updates = getattr(self, "updates", None)
+        dashboard_cards = getattr(self, "dashboard_cards", None)
 
         if key == "health":
             self.rename_collection_btn.setEnabled(False)
@@ -136,6 +137,8 @@ class CollectionMixin:
             self.content_title.setText("Health Checks")
             if grid:
                 grid.hide()
+            if dashboard_cards:
+                dashboard_cards.hide()
             if health:
                 health.show()
                 health.set_games(self._all_games)
@@ -155,6 +158,8 @@ class CollectionMixin:
             self.content_title.setText("Updates")
             if grid:
                 grid.hide()
+            if dashboard_cards:
+                dashboard_cards.hide()
             if health:
                 health.hide()
             if updates:
@@ -172,6 +177,8 @@ class CollectionMixin:
             updates.hide()
         if grid:
             grid.show()
+        if dashboard_cards:
+            dashboard_cards.show()
 
         if key == "all":
             self.rename_collection_btn.setEnabled(False)
