@@ -24,7 +24,7 @@ from app.ui.widgets import (
 )
 from app.ui.widgets.library_sidebar import LibrarySidebar
 from app.ui.theme import (
-    apply_theme, current_theme, header_bar_style, gradient_header_style,
+    apply_theme, current_theme, header_bar_style,
     primary_btn_style, secondary_btn_style, ghost_btn_style,
     toolbar_btn_style, segmented_btn_style, icon_btn_style, popover_frame_style,
     section_header_style, scaled_toolbar_height,
@@ -256,8 +256,10 @@ class MainWindow(
         """Build the slim branded header bar, scaled for DPI and font size."""
         header = QFrame()
         header.setFixedHeight(scaled_toolbar_height())
+        # Flat header (was a diagonal qlineargradient) — reads cleaner and
+        # lighter alongside the flattened card grid.
         header.setStyleSheet(
-            f"QFrame {{ {gradient_header_style(theme)} }}"
+            f"QFrame {{ {header_bar_style(theme)} }}"
             f"QFrame QLabel {{ background: transparent; border: none; }}"
             f"QFrame QLineEdit {{ background: transparent; border: none; }}"
         )
@@ -350,7 +352,7 @@ class MainWindow(
         self.tools_btn.setMenu(tools_menu)
         self.tools_btn.setStyleSheet(
             ghost_btn_style(theme) +
-            f" QToolButton {{ font-size: 16px; padding: 4px 8px; min-width: 32px; }}"
+            " QToolButton { font-size: 16px; padding: 4px 8px; min-width: 32px; }"
         )
 
     def _build_content_area(self, theme) -> QWidget:
