@@ -179,6 +179,10 @@ class GameGridView(QListView):
             return
         index = self.indexAt(event.pos())
         if not index.isValid():
+            # Clear any stale press state so a drag started from here can't
+            # reuse a previously clicked card's index.
+            self._press_pos = None
+            self._press_index = QModelIndex()
             super().mousePressEvent(event)
             return
 
@@ -253,6 +257,13 @@ class GameGridView(QListView):
         if (event.buttons() & Qt.LeftButton) and self._press_index.isValid():
             if (event.pos() - self._press_pos).manhattanLength() >= 10:
                 self._start_drag(self._press_index)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        # A press that never became a drag must not leave its index behind for
+        # the next press to pick up.
+        self._press_pos = None
+        self._press_index = QModelIndex()
+        super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         self.viewport().update()

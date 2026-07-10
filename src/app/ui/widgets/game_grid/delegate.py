@@ -26,7 +26,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle
 
 from app.services import (
-    best_icon_path, request_icon_async,
+    request_icon_async,
     parse_version, compare_versions,
 )
 from app.services.version_parser import CompareResult
@@ -146,6 +146,23 @@ class CardGeometry:
 # selection change) multiplies that.  parse_version/compare_versions are pure
 # w.r.t. these fields, so cache on them.  No eviction needed at library scale.
 _update_cache: dict[tuple, bool] = {}
+
+
+def _icon_candidate(game) -> str:
+    """Pick an icon source path *without* probing the filesystem.
+
+    ``best_icon_path()`` calls ``Path.exists()`` on each candidate, which is a
+    ``stat()`` syscall — cached, but the first one runs synchronously and can
+    block the GUI thread when the path lives on slow or disconnected storage.
+    paint() must never do that, so mirror the old card: take the first
+    non-empty candidate and let the background loader resolve/fall back.
+    """
+    return (
+        (getattr(game, "shortcut_path", "") or "")
+        or (getattr(game, "backup_target_path", "") or "")
+        or (getattr(game, "archive_folder_path", "") or "")
+        or (getattr(game, "compressed_archive_path", "") or "")
+    )
 
 
 def _update_available(game) -> bool:
@@ -284,7 +301,7 @@ class GameCardDelegate(QStyledItemDelegate):
         pm = QPixmapCache.find(key)
         if pm is not None:
             return pm
-        path = best_icon_path(game)
+        path = _icon_candidate(game)
         if not path:
             return None
         # Request asynchronously (deduped by path).  request_icon_async invokes
