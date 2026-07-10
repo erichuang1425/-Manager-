@@ -1,12 +1,14 @@
 """
 Game Grid Package.
 
-Provides widgets for displaying games in a grid layout.
+Displays games using Qt's native model/view/delegate pipeline (no per-card
+widgets) for smooth scrolling and fast (re)rendering.
 
 Classes:
-    GameGrid: Container widget for displaying game cards in a responsive grid
-    GameCard: Interactive card widget for individual games
-    SkeletonCard: Placeholder card shown during loading
+    GameGrid: Container widget wiring the model/view/delegate together
+    GameListModel: QAbstractListModel holding List[Game]
+    GameCardDelegate: QStyledItemDelegate that paints each card
+    GameGridView: IconMode QListView + input handling
 
 Functions:
     status_label: Convert status code to display label
@@ -16,14 +18,17 @@ Functions:
 """
 
 from .grid import GameGrid
-from .card import GameCard
-from .skeleton import SkeletonCard
+from .model import GameListModel, GameRole
+from .delegate import GameCardDelegate
+from .view import GameGridView
 from .display_utils import status_label, confidence_icon, stars, relative_time
 
 __all__ = [
     "GameGrid",
-    "GameCard",
-    "SkeletonCard",
+    "GameListModel",
+    "GameRole",
+    "GameCardDelegate",
+    "GameGridView",
     "status_label",
     "confidence_icon",
     "stars",
