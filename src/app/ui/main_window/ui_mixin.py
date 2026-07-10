@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import time
 
-from PySide6.QtCore import Qt, QEasingCurve, QPropertyAnimation, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QVBoxLayout, QLabel,
-    QProgressBar, QGraphicsOpacityEffect, QMessageBox,
+    QProgressBar, QMessageBox,
 )
 
 from app.ui.theme import apply_theme, is_reduced_motion
@@ -64,19 +64,16 @@ class UIMixin:
         self.view_compact.setChecked(self._view_mode == "compact")
 
     def _pulse_widget(self: "MainWindow", widget) -> None:
-        if widget is None:
-            return
-        eff = widget.graphicsEffect()
-        if not isinstance(eff, QGraphicsOpacityEffect):
-            eff = QGraphicsOpacityEffect(widget)
-            widget.setGraphicsEffect(eff)
-        anim = QPropertyAnimation(eff, b"opacity", widget)
-        anim.setDuration(130)
-        anim.setStartValue(0.6)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.OutQuad)
-        anim.start()
-        widget._pulse_anim = anim
+        """No-op click feedback.
+
+        This used to attach a QGraphicsOpacityEffect + QPropertyAnimation to the
+        button on every click — an off-screen render pass per frame, and the
+        effect stayed bolted to the widget afterwards.  The buttons already
+        signal state through their checked styling, so drop the effect entirely
+        and make sure no stale one lingers from a previous build.
+        """
+        if widget is not None and widget.graphicsEffect() is not None:
+            widget.setGraphicsEffect(None)
 
     def _on_view_mode_changed(self: "MainWindow") -> None:
         self._view_mode = "compact" if self.sender() == self.view_compact else "comfortable"
@@ -203,31 +200,16 @@ class UIMixin:
         self.grid.refresh()
 
     def _animate_splitter(self: "MainWindow", target_sizes: list) -> None:
-        """Smoothly animate splitter to target sizes."""
-        current = self._splitter.sizes()
-        if len(current) != 3 or len(target_sizes) != 3:
-            self._splitter.setSizes(target_sizes)
-            return
+        """Set splitter sizes directly.
 
-        steps = 8
-        step_delay = 20  # ms
-
-        def step_fn(i: int = 0):
-            if i >= steps:
-                self._splitter.setSizes(target_sizes)
-                if not self._details_visible:
-                    self._details_widget.hide()
-                return
-            t = (i + 1) / steps
-            t_ease = 1 - (1 - t) ** 3  # ease-out cubic
-            interpolated = [
-                int(current[j] + (target_sizes[j] - current[j]) * t_ease)
-                for j in range(3)
-            ]
-            self._splitter.setSizes(interpolated)
-            QTimer.singleShot(step_delay, lambda: step_fn(i + 1))
-
-        step_fn()
+        Previously this tweened the sizes through chained QTimer.singleShot
+        steps, which forces a full relayout of both panes (and a grid refresh)
+        on every frame — visible jank for no real benefit.  A panel resize does
+        not need animating; snap straight to the target.
+        """
+        self._splitter.setSizes(target_sizes)
+        if not self._details_visible:
+            self._details_widget.hide()
 
     def _reset_layout(self: "MainWindow") -> None:
         self._splitter.setSizes([220, self.width() - 520, 300 if self._details_visible else 0])
