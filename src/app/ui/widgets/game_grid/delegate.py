@@ -132,17 +132,41 @@ class CardGeometry:
             z.append(("rating", r, value))
         for kind, payload, r in self.chips:
             z.append((kind, r, payload))
-        z.append(("strip", self.strip, None))
+        # The painted strip is only ~3px tall; expand its clickable target to
+        # ~8px (centred on the strip, extending down into the card body edge)
+        # so cycling status is not a pixel-hunt.
+        cx = self.strip.center().y()
+        hit = QRect(self.strip.x(), cx - 4, self.strip.width(), 8)
+        z.append(("strip", hit, None))
         return z
 
 
+# Memoise update-availability: build_geometry runs on every paint *and* every
+# hit test for every visible card, and a full-viewport repaint (e.g. on
+# selection change) multiplies that.  parse_version/compare_versions are pure
+# w.r.t. these fields, so cache on them.  No eviction needed at library scale.
+_update_cache: dict[tuple, bool] = {}
+
+
 def _update_available(game) -> bool:
+    key = (
+        game.game_id,
+        game.installed_version_raw,
+        game.source_version_raw,
+        bool(game.source_url),
+    )
+    cached = _update_cache.get(key)
+    if cached is not None:
+        return cached
     if not game.source_url:
-        return False
-    inst = parse_version(game.installed_version_raw) if game.installed_version_raw else None
-    src = parse_version(game.source_version_raw) if game.source_version_raw else None
-    cmp = compare_versions(inst, src)
-    return cmp in (CompareResult.OLDER, CompareResult.UNKNOWN)
+        result = False
+    else:
+        inst = parse_version(game.installed_version_raw) if game.installed_version_raw else None
+        src = parse_version(game.source_version_raw) if game.source_version_raw else None
+        cmp = compare_versions(inst, src)
+        result = cmp in (CompareResult.OLDER, CompareResult.UNKNOWN)
+    _update_cache[key] = result
+    return result
 
 
 def build_geometry(rect: QRect, game, m: CardMetrics, multi_select: bool) -> CardGeometry:

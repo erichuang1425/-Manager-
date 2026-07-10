@@ -388,7 +388,10 @@ class GameGrid(QWidget):
         return bar
 
     def _update_pagination_bar(self) -> None:
-        if not self._pagination_bar.isVisible():
+        # Gate on browse mode, not widget visibility: window.py configures the
+        # browse mode and loads games *before* the window is shown, so a saved
+        # "pages" mode must populate the bar even while it is not yet visible.
+        if self._browse_mode != "pages":
             return
         theme = current_theme()
         current_page = self.model.page()
