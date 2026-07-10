@@ -186,18 +186,23 @@ class GameGridView(QListView):
             super().mousePressEvent(event)
             return
 
-        self._press_pos = event.pos()
-        self._press_index = index
         game = index.data(GameRole)
 
         zone = self._zone_at(index, event.pos())
         if zone is not None:
+            # A zone press is a click action, not a drag.  Do NOT arm drag
+            # state: several zone handlers reset the model (via _apply_search),
+            # which would leave a held-mouse move dragging a stale index.
+            self._press_pos = None
+            self._press_index = QModelIndex()
             kind, payload = zone
             self._handle_zone(game, kind, payload, index)
             event.accept()
             return
 
-        # Body click.
+        # Body click — this is the only press that arms a drag.
+        self._press_pos = event.pos()
+        self._press_index = index
         self.setCurrentIndex(index)
         if self._multi_select or (event.modifiers() & Qt.ControlModifier):
             self._toggle_select(game.game_id)

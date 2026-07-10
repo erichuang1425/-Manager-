@@ -292,18 +292,23 @@ class GameCardDelegate(QStyledItemDelegate):
     # -- icon plumbing ------------------------------------------------- #
 
     @staticmethod
-    def _icon_key(game_id: str, size: int, dpr: float) -> str:
-        return f"gcard:{game_id}:{size}:{dpr:.2f}"
+    def _icon_key(game_id: str, path: str, size: int, dpr: float) -> str:
+        # The path is part of the key so that when a game's shortcut/archive
+        # path changes (e.g. a health fix) under the same game_id, the lookup
+        # misses and the new icon is loaded instead of serving the stale one.
+        return f"gcard:{game_id}:{path}:{size}:{dpr:.2f}"
 
     def _icon_pixmap(self, game, target_px: int, dpr: float) -> Optional[QPixmap]:
         """Return a ready-to-draw pixmap from cache, or None (requesting async)."""
-        key = self._icon_key(game.game_id, target_px, dpr)
-        pm = QPixmapCache.find(key)
-        if pm is not None:
-            return pm
+        # _icon_candidate is non-probing (no filesystem stat), so it is cheap to
+        # resolve before the cache lookup and lets the path feed the cache key.
         path = _icon_candidate(game)
         if not path:
             return None
+        key = self._icon_key(game.game_id, path, target_px, dpr)
+        pm = QPixmapCache.find(key)
+        if pm is not None:
+            return pm
         # Request asynchronously (deduped by path).  request_icon_async invokes
         # the callback synchronously when the icon is already in the service's
         # async cache and queues a background load otherwise — so paint never
