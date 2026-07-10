@@ -75,6 +75,10 @@ class GameGrid(QWidget):
 
         self.model = GameListModel(self)
         self.view = GameGridView(self.model, self)
+        # Keyboard handling (arrows / PageUp / PageDown / Enter / Space) lives on
+        # the view.  Callers still focus the wrapper (e.g. grid.setFocus() from
+        # the Escape handler), so proxy focus to the view or keyboard nav dies.
+        self.setFocusProxy(self.view)
         theme = current_theme()
         self.view.setContentsMargins(
             theme.grid_padding, theme.grid_padding,
