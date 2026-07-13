@@ -30,11 +30,26 @@ class ScanItem:
     version_str: str
     version_tuple: tuple[int, ...]
 
+    # Output location (relative to the output root), POSIX-style.
+    # "" => flat top-level game; "RenPyCollection" or "Outer/Inner" => collection member.
+    rel_output_subdir: str = ""
+    collection_name: str = ""
+
     exe_candidates: List[ExeCandidate] = field(default_factory=list)
     html_candidates: List[str] = field(default_factory=list)
     chosen_exe: str = ""
     recommended_exe: str = ""
     target_type: str = "exe"
+
+    # Collection support.
+    # `is_collection` marks an unresolved collection-root item: the user confirms
+    # (or rejects) the grouping in the picker. `collection_members` holds the
+    # prebuilt member ScanItems to splice in when confirmed as a collection.
+    # `collection_root` is set on expanded member/launcher items so the whole
+    # group can be regrouped or overridden later.
+    is_collection: bool = False
+    collection_members: list = field(default_factory=list)
+    collection_root: str = ""
 
     existing_shortcut_path: str = ""
     existing_version_str: str = ""

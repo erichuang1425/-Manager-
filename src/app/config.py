@@ -94,3 +94,17 @@ class AppConfig:
         if hasattr(self, key) and key != "_extra":
             return True
         return key in self._extra
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        """Remove an optional compatibility setting.
+
+        Typed settings are reset to their dataclass default; extra settings
+        are removed like a normal dictionary entry.
+        """
+        known = {f.name: f for f in fields(self) if f.name != "_extra"}
+        if key in known:
+            value = getattr(self, key)
+            default_value = known[key].default
+            setattr(self, key, default_value)
+            return value
+        return self._extra.pop(key, default)

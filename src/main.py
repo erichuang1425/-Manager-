@@ -32,7 +32,9 @@ def main() -> None:
         raise
     finally:
         from app.services.icon_service import shutdown_icon_loader
+        from app.services.artwork_service import shutdown_artwork_loader
         shutdown_icon_loader()
+        shutdown_artwork_loader()
 
 if __name__ == "__main__":
     main()

@@ -718,7 +718,7 @@ def filter_chip_style(theme: ThemeSpec, active: bool = False, removable: bool = 
 def primary_btn_style(theme: ThemeSpec) -> str:
     """Filled accent button for primary actions (Play, Scan)."""
     return (
-        f"QPushButton {{ "
+        f"QPushButton, QToolButton {{ "
         f"background: {theme.accent.name()}; "
         f"color: {theme.bg.name()}; "
         f"border: none; "
@@ -726,9 +726,9 @@ def primary_btn_style(theme: ThemeSpec) -> str:
         f"padding: 6px 16px; "
         f"font-weight: 600; font-size: 13px; "
         f"}} "
-        f"QPushButton:hover {{ background: {theme.accent.lighter(112).name()}; }} "
-        f"QPushButton:pressed {{ background: {theme.accent.darker(110).name()}; }} "
-        f"QPushButton:disabled {{ background: {theme.surface_alt.name(QColor.HexArgb)}; "
+        f"QPushButton:hover, QToolButton:hover {{ background: {theme.accent.lighter(112).name()}; }} "
+        f"QPushButton:pressed, QToolButton:pressed {{ background: {theme.accent.darker(110).name()}; }} "
+        f"QPushButton:disabled, QToolButton:disabled {{ background: {theme.surface_alt.name(QColor.HexArgb)}; "
         f"color: {theme.text_muted.name()}; }}"
     )
 

@@ -318,6 +318,7 @@ def test_library_bundle_round_trips_every_datetime(tmp_path, isolated_fallback):
         last_played=timestamp,
         source_checked_at=timestamp,
         last_download_at=timestamp,
+        card_artwork_path=r"C:\Card Artwork\example.jpg",
     )
     collection = Collection(collection_id="favorites", name="Favorites", game_ids=["game-1"])
 
@@ -327,6 +328,7 @@ def test_library_bundle_round_trips_every_datetime(tmp_path, isolated_fallback):
     assert games[0].last_played == timestamp
     assert games[0].source_checked_at == timestamp
     assert games[0].last_download_at == timestamp
+    assert games[0].card_artwork_path == r"C:\Card Artwork\example.jpg"
     assert collections == [collection]
 
 

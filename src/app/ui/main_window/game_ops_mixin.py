@@ -6,7 +6,11 @@ from pathlib import Path
 import os
 import webbrowser
 
-from PySide6.QtWidgets import QMessageBox, QInputDialog, QFileDialog
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QImage
+from PySide6.QtWidgets import (
+    QApplication, QDialog, QMessageBox, QInputDialog, QFileDialog,
+)
 
 from app.models import Game
 from app.services import launch_game
@@ -190,9 +194,198 @@ class GameOpsMixin:
             g.last_played = datetime.now()
             self._persist_library()
             self.details.show_game(g)
+            self.grid.refresh()
+            if hasattr(self, "home_page"):
+                self.home_page.refresh(self._all_games)
             self.statusBar().showMessage(f"{g.title}: {info}", 5000)
         else:
             QMessageBox.warning(self, "Launch failed", f"{g.title}\n\n{info}")
+
+    def _show_random_picker(
+        self: "MainWindow", games: Optional[list[Game]] = None,
+    ) -> None:
+        """Open the picker for the supplied pool or the most relevant view."""
+        if games is None:
+            on_library = (
+                hasattr(self, "page_stack")
+                and self.page_stack.currentWidget() is self.library_page
+            )
+            pool = list(self._filtered if on_library else self._all_games)
+        else:
+            pool = list(games)
+
+        from app.ui.dialogs import RandomGameDialog
+
+        picker = RandomGameDialog(pool, self)
+        if picker.exec() != QDialog.DialogCode.Accepted or picker.selected_game is None:
+            return
+        if picker.action == "play":
+            self._on_game_play(picker.selected_game.game_id)
+        elif picker.action == "view":
+            self._reveal_game(picker.selected_game.game_id)
+
+    def _choose_card_artwork(self: "MainWindow", game_id: str) -> None:
+        game = self._get_game(game_id)
+        if game is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose card artwork",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)",
+        )
+        if not path:
+            return
+        from app.services import import_card_artwork
+        try:
+            stored_path = import_card_artwork(
+                game.game_id,
+                path,
+                previous_path=game.card_artwork_path,
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Artwork could not be added", str(error))
+            return
+        self._apply_card_artwork_path(game, stored_path, "Card artwork added")
+
+    def _paste_card_artwork(self: "MainWindow", game_id: str) -> None:
+        image = QApplication.clipboard().image()
+        if image.isNull():
+            QMessageBox.information(
+                self,
+                "No screenshot on the clipboard",
+                "Copy an image or press Win+Shift+S, select the game area, then choose Paste again.",
+            )
+            return
+        self._save_card_artwork_image(game_id, image, "Clipboard screenshot added")
+
+    def _capture_card_artwork(self: "MainWindow", game_id: str) -> None:
+        """Minimize the library and adopt the next Snipping Tool image."""
+        if getattr(self, "_artwork_capture_game_id", None):
+            self.statusBar().showMessage("A card artwork capture is already active.", 4000)
+            return
+        if self._get_game(game_id) is None:
+            return
+
+        self._artwork_capture_game_id = game_id
+        self._artwork_capture_restore_maximized = self.isMaximized()
+        clipboard = QApplication.clipboard()
+        clipboard.dataChanged.connect(self._on_artwork_capture_clipboard_changed)
+        self.statusBar().showMessage(
+            "Select the game area in Snipping Tool; the card updates automatically.",
+            30000,
+        )
+        self.showMinimized()
+        QTimer.singleShot(250, lambda gid=game_id: self._open_artwork_screenclip(gid))
+        QTimer.singleShot(30000, lambda gid=game_id: self._expire_artwork_capture(gid))
+
+    def _open_artwork_screenclip(self: "MainWindow", game_id: str) -> None:
+        if getattr(self, "_artwork_capture_game_id", None) != game_id:
+            return
+        if not QDesktopServices.openUrl(QUrl("ms-screenclip:")):
+            self._finish_artwork_capture()
+            QMessageBox.warning(
+                self,
+                "Screen capture unavailable",
+                "Windows Snipping Tool could not be opened. Use Win+Shift+S and the Paste button instead.",
+            )
+
+    def _on_artwork_capture_clipboard_changed(self: "MainWindow") -> None:
+        game_id = getattr(self, "_artwork_capture_game_id", None)
+        if not game_id:
+            return
+        image = QApplication.clipboard().image()
+        if image.isNull():
+            return
+        self._finish_artwork_capture()
+        self._save_card_artwork_image(game_id, image, "Captured game artwork added")
+
+    def _expire_artwork_capture(self: "MainWindow", game_id: str) -> None:
+        if getattr(self, "_artwork_capture_game_id", None) != game_id:
+            return
+        self._finish_artwork_capture()
+        self.statusBar().showMessage(
+            "Capture timed out. Use Capture again or paste a screenshot from the clipboard.",
+            6000,
+        )
+
+    def _finish_artwork_capture(self: "MainWindow") -> None:
+        try:
+            QApplication.clipboard().dataChanged.disconnect(
+                self._on_artwork_capture_clipboard_changed
+            )
+        except (RuntimeError, TypeError):
+            pass
+        self._artwork_capture_game_id = None
+        if getattr(self, "_artwork_capture_restore_maximized", False):
+            self.showMaximized()
+        else:
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _save_card_artwork_image(
+        self: "MainWindow", game_id: str, image: QImage, message: str,
+    ) -> None:
+        game = self._get_game(game_id)
+        if game is None:
+            return
+        from app.services import save_card_artwork
+        try:
+            stored_path = save_card_artwork(
+                game.game_id,
+                image,
+                previous_path=game.card_artwork_path,
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Artwork could not be added", str(error))
+            return
+        self._apply_card_artwork_path(game, stored_path, message)
+
+    def _remove_card_artwork(self: "MainWindow", game_id: str) -> None:
+        game = self._get_game(game_id)
+        if game is None or not game.card_artwork_path:
+            return
+        if QMessageBox.question(
+            self,
+            "Remove card artwork?",
+            "Return this card to its generated title background?",
+        ) != QMessageBox.Yes:
+            return
+        from app.services import remove_card_artwork
+        previous_path = game.card_artwork_path
+        game.card_artwork_path = ""
+        remove_card_artwork(previous_path)
+        self._refresh_card_artwork(game, "Card artwork removed")
+
+    def _apply_card_artwork_path(
+        self: "MainWindow", game: Game, path: str, message: str,
+    ) -> None:
+        game.card_artwork_path = path
+        self._refresh_card_artwork(game, message)
+
+    def _refresh_card_artwork(
+        self: "MainWindow", game: Game, message: str,
+    ) -> None:
+        self._persist_library()
+        self.details.show_game(game)
+        self.grid.refresh()
+        if hasattr(self, "home_page"):
+            self.home_page.refresh(self._all_games)
+        self.statusBar().showMessage(message, 4500)
+
+    def _reveal_game(self: "MainWindow", game_id: str) -> None:
+        """Navigate to a game and clear filters only when they hide the target."""
+        game = self._get_game(game_id)
+        if game is None:
+            return
+        self.sidebar.set_selected("all")
+        cleared_filters = game_id not in {item.game_id for item in self._filtered}
+        if cleared_filters:
+            self._clear_all_filters()
+        if self.grid.reveal_game(game_id):
+            suffix = " (filters cleared)" if cleared_filters else ""
+            self.statusBar().showMessage(f"Showing {game.title}{suffix}", 3500)
 
     def _on_rating_changed(self: "MainWindow", game_id: str, rating) -> None:
         g = self._get_game(game_id)

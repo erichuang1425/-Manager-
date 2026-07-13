@@ -157,7 +157,11 @@ class GameGridView(QListView):
         if game is None:
             return None
         rect = self.visualRect(index)
-        geo = build_geometry(rect, game, self._delegate.metrics, self._multi_select)
+        # A hit test only runs for the card under the cursor, which is by
+        # definition hovered — so build the hovered geometry.  This keeps the
+        # rating-star and status-chip hit zones in sync with what paint() draws
+        # in the hover state (progressive-disclosure elements).
+        geo = build_geometry(rect, game, self._delegate.metrics, self._multi_select, hovered=True)
         # Only treat the play button as active when hovering that item.
         for kind, r, payload in geo.zones():
             if kind == "play":

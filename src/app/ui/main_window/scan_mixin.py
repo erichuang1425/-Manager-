@@ -11,7 +11,10 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QFileD
 
 from app.models import Game
 from app.storage import settings_json_path
-from app.services import find_duplicate_shortcuts_in_root, move_duplicates_to_quarantine, merge_scanned_into_library, pixmap_for_game
+from app.services import (
+    find_duplicate_shortcuts_in_root, move_duplicates_to_quarantine,
+    merge_scanned_into_library, pixmap_for_game,
+)
 from app.ui.dialogs import ScanWorker
 from app.ui.widgets import show_success, show_error
 from app.logging_utils import kv
@@ -83,6 +86,30 @@ class ScanMixin:
 
         self._start_scan_thread(str(root_path))
 
+    def _on_import_shortcuts_clicked(self: "MainWindow") -> None:
+        """Add selected .lnk/.url/.html files directly to the library."""
+        if self._scan_thread:
+            QMessageBox.information(
+                self, "Scan in progress",
+                "Wait for the current folder scan to finish before adding more shortcuts.",
+            )
+            return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add Game Shortcuts",
+            self._root_folder or str(Path.home()),
+            "Game shortcuts (*.lnk *.url *.html);;Windows shortcuts (*.lnk);;Internet shortcuts (*.url);;HTML files (*.html)",
+        )
+        if not paths:
+            return
+
+        self._start_scan_thread(paths=paths)
+
+    def _choose_and_scan_root(self: "MainWindow") -> None:
+        """Always ask for a shortcut folder, then immediately scan it."""
+        if self._choose_root_folder():
+            self._on_scan_clicked()
+
     def _open_scanner_project(self: "MainWindow") -> None:
         """Launch relocated Scanner without blocking this Qt loop."""
         try:
@@ -104,20 +131,31 @@ class ScanMixin:
         except Exception as e:
             QMessageBox.warning(self, "Open Scanner failed", f"{e}")
 
-    def _choose_root_folder(self: "MainWindow") -> None:
+    def _choose_root_folder(self: "MainWindow") -> bool:
         folder = QFileDialog.getExistingDirectory(self, "Choose shortcuts root folder")
         if not folder:
-            return
+            return False
         self._root_folder = folder
         self._settings["root_folder"] = folder
         self._persist_settings()
+        if hasattr(self, "import_page"):
+            self.import_page.set_root_folder(folder)
+        if hasattr(self, "settings_page"):
+            self.settings_page.set_values(self._settings_snapshot())
         self.statusBar().showMessage(f"Root folder set: {folder}", 5000)
+        return True
 
-    def _start_scan_thread(self: "MainWindow", root_folder: str) -> None:
-        self._log.info("scan_start %s", kv(event="scan", path=root_folder))
+    def _start_scan_thread(
+        self: "MainWindow",
+        root_folder: str = "",
+        paths: Optional[List[str]] = None,
+    ) -> None:
+        source = root_folder or f"{len(paths or [])} selected files"
+        self._log.info("scan_start %s", kv(event="scan", path=source))
         # progress dialog
-        self._progress_dialog = QProgressDialog(f"Scanning…\n{root_folder}", "Cancel", 0, 0, self)
-        self._progress_dialog.setWindowTitle("Scanning")
+        action = "Adding shortcuts" if paths else "Scanning"
+        self._progress_dialog = QProgressDialog(f"{action}…\n{source}", "Cancel", 0, 0, self)
+        self._progress_dialog.setWindowTitle(action)
         self._progress_dialog.setWindowModality(Qt.WindowModal)
         self._progress_dialog.setMinimumDuration(0)
         self._progress_dialog.setMinimumWidth(420)
@@ -127,7 +165,7 @@ class ScanMixin:
 
         # thread + worker
         self._scan_thread = QThread()
-        self._scan_worker = ScanWorker(root_folder)
+        self._scan_worker = ScanWorker(root_folder, paths=paths)
         self._scan_worker.moveToThread(self._scan_thread)
 
         # Use queued connections so UI updates stay on the main thread.
@@ -208,7 +246,10 @@ class ScanMixin:
             show_error("No shortcuts found in the selected folder.")
         else:
             show_success(f"Scan complete: {new_count} new, {updated_count} updated games.")
-        QMessageBox.information(self, "Scan summary", msg)
+        if hasattr(self, "import_page"):
+            self.import_page.set_result(
+                f"Added {new_count} new games and refreshed {updated_count} existing entries."
+            )
         self._log.info(
             "scan_done %s",
             kv(event="scan", scanned=len(games), total=after, delta=delta, cancelled=cancelled),

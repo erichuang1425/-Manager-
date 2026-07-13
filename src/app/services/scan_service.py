@@ -74,7 +74,6 @@ def scan_shortcut_root(
     """
     Scans ONLY the top level of the shortcut root folder for .lnk/.url/.html.
     """
-    start = time.perf_counter()
     root = Path(root_folder)
     if not root.exists() or not root.is_dir():
         _log.warning("scan_skip %s", kv(reason="missing_root", path=root_folder))
@@ -85,6 +84,35 @@ def scan_shortcut_root(
     files = [p for p in root.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS]
     files.sort(key=lambda p: p.name.lower())
     _log.info("scan_start %s", kv(path=root_folder, files=len(files)))
+    return scan_shortcut_files(
+        files, progress=progress, should_stop=should_stop, source_label=root_folder
+    )
+
+
+def scan_shortcut_files(
+    paths: List[str | Path],
+    progress: Optional[Callable[[str, int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+    source_label: str = "selected files",
+) -> List[Game]:
+    """Read selected shortcut files into importable game records.
+
+    This is the direct-import counterpart to :func:`scan_shortcut_root`.  It
+    deliberately accepts multiple files so users do not have to create or
+    reorganize a dedicated shortcut folder before adding a game.
+    """
+    start = time.perf_counter()
+    seen: set[str] = set()
+    files: List[Path] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        key = str(path.resolve(strict=False)).casefold()
+        if key in seen or not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTS:
+            continue
+        seen.add(key)
+        files.append(path)
+    files.sort(key=lambda p: (p.name.casefold(), str(p).casefold()))
+
     if progress:
         progress(f"Found {len(files)} shortcut files…", 0, len(files))
 
@@ -93,7 +121,7 @@ def scan_shortcut_root(
     cancelled = False
     for idx, f in enumerate(files):
         if should_stop and should_stop():
-            _log.info("scan_cancelled %s", kv(path=root_folder, read=idx, total=len(files)))
+            _log.info("scan_cancelled %s", kv(path=source_label, read=idx, total=len(files)))
             cancelled = True
             break
         if progress:
@@ -140,7 +168,7 @@ def scan_shortcut_root(
     _log.info(
         "scan_done %s",
         kv(
-            path=root_folder,
+            path=source_label,
             files=len(files),
             games=len(games),
             errors=errors,

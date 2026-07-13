@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QScrollArea, QFrame, QSizePolicy, QMenu
+    QProgressBar, QScrollArea, QFrame, QSizePolicy, QMenu, QLineEdit
 )
 
 from app.services.download_manager import (
@@ -258,6 +258,24 @@ class DownloadsPanel(QWidget):
 
         layout.addLayout(header_row)
 
+        # Direct queue entry: the panel used to be display-only, which made it
+        # impossible to use unless another unfinished workflow added an item.
+        queue_row = QHBoxLayout()
+        self.url_edit = QLineEdit()
+        self.url_edit.setPlaceholderText("Paste a direct download URL...")
+        self.url_edit.setClearButtonEnabled(True)
+        self.url_edit.returnPressed.connect(self._queue_entered_url)
+        self.add_url_btn = QPushButton("Add Download")
+        self.add_url_btn.clicked.connect(self._queue_entered_url)
+        queue_row.addWidget(self.url_edit, 1)
+        queue_row.addWidget(self.add_url_btn)
+        layout.addLayout(queue_row)
+
+        self.queue_status = QLabel("")
+        self.queue_status.setWordWrap(True)
+        self.queue_status.setStyleSheet(f"color: {theme.text_muted.name(QColor.HexArgb)};")
+        layout.addWidget(self.queue_status)
+
         # Actions row
         actions_row = QHBoxLayout()
 
@@ -322,6 +340,21 @@ class DownloadsPanel(QWidget):
         self.filter_all.setChecked(sender == self.filter_all)
         self.filter_active.setChecked(sender == self.filter_active)
         self.filter_completed.setChecked(sender == self.filter_completed)
+        self._refresh_list()
+
+    def _queue_entered_url(self) -> None:
+        url = self.url_edit.text().strip()
+        if not url.lower().startswith(("http://", "https://")):
+            self.queue_status.setText("Enter a complete http:// or https:// download URL.")
+            return
+        try:
+            download_id = self.add_download(url)
+        except Exception as exc:
+            self.queue_status.setText(f"Could not queue download: {exc}")
+            _log.exception("download_queue_ui_failed")
+            return
+        self.url_edit.clear()
+        self.queue_status.setText(f"Download {download_id} added to the queue.")
         self._refresh_list()
 
     def _get_filter_mode(self) -> str:

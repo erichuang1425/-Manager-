@@ -1,3 +1,15 @@
+## Unreleased
+
+- Replaced the hard-coded featured-game panel and its dead controls with library-driven content.
+- Added a first-class Add Games page with direct multi-file shortcut import, folder scanning, backup restore, source URL matching, archive import, and shortcut creation.
+- Replaced modal preferences with a full Settings page covering library paths, appearance, browsing, behavior, and data tools.
+- Exposed the download queue in the sidebar and added direct URL queueing with validation and status feedback.
+- Connected the empty-library import action, added visible sidebar counts, and made numbered sidebar shortcuts skip section headings.
+- Preserved each executable or shortcut icon as a native-size identity badge while using generated title artwork for card previews.
+- Added Unicode-aware Traditional Chinese, Simplified Chinese, and Japanese title marks, plus per-game card backgrounds from Snipping Tool, clipboard paste, or an image file; identity badges are slightly larger without pixel-stretching.
+- Added an explainable **Pick for me** flow with Balanced, Continue, and Discover modes, reroll protection, current-view filtering, and `Ctrl+P`.
+- Smoothed navigation and resizing with adaptive home layouts, content-aware toolbar compaction, hidden-page render avoidance, and debounced settings writes.
+
 ## v4.1 (2026-02-03) - Code Quality Release
 - **Major Refactoring:** Split 4 monolithic files (5,091 lines) into organized packages:
   - `main_window.py` → `main_window/` package with 10 focused mixins

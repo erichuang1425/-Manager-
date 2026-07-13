@@ -12,11 +12,11 @@ _Screenshot uses sample data._
 
 | Area | What it does |
 | --- | --- |
-| Library | Card grid, list mode, tags, status filters, collections, ratings, notes, and launch counts. |
-| Scanning | Imports top-level `.lnk`, `.url`, and `.html` entries while preserving edits you already made. |
+| Library | Adaptive cards with CJK-aware title artwork, captured or imported card backgrounds, crisp native icon badges, Pick for me modes, tags, filters, collections, ratings, notes, and launch counts. |
+| Scanning | Adds selected `.lnk`, `.url`, and `.html` files directly or syncs a whole shortcut folder while preserving your edits. |
 | Updates | Checks source pages in the background and keeps update states separate from unknown results. |
 | Maintenance | Flags missing shortcuts, targets, source URLs, archive paths, game folders, and version mismatches. |
-| Customization | Themes, density options, font controls, focus mode, and saved layout preferences. |
+| Customization | A full Settings page for library paths, themes, density, fonts, browsing, focus mode, and saved layout preferences. |
 | Tools | Bundled shortcut scanner, bulk source URL import, archive import, export/import, undo/redo, and keyboard shortcuts. |
 
 ## Tech Stack
@@ -45,11 +45,13 @@ python src/main.py
 
 First run:
 
-1. Choose **Scan** and select the folder that contains your shortcuts.
+1. Choose **Add Games** to add individual shortcut files, scan a shortcut folder, restore a library backup, or import archives.
 2. Review duplicate shortcut groups before importing.
 3. Select a game and add source URL, installed version, notes, tags, and archive paths in **Details**.
 4. Use **Check Updates** to refresh version status.
 5. Open **Health Checks** to fix missing paths or ignore known issues.
+
+The same import choices are available from the **Add Games** page in the sidebar. Use **Settings** in the sidebar (or `Ctrl+,`) to manage the shortcut folder, appearance, browsing, behavior, and local data tools without leaving the main window.
 
 The app stores `library.json`, `settings.json`, and logs under `%APPDATA%/GameLibraryManager`.
 

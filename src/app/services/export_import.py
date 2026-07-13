@@ -268,7 +268,8 @@ def _game_to_dict(game: Game) -> Dict[str, Any]:
         "game_id", "title", "shortcut_path", "shortcut_type", "status",
         "rating", "tags", "notes", "source_url", "installed_version_raw",
         "source_version_raw", "launch_count", "confidence", "last_played",
-        "archive_folder_path", "game_folder_path", "source_checked_at"
+        "archive_folder_path", "game_folder_path", "source_checked_at",
+        "card_artwork_path",
     ]:
         val = getattr(game, field, None)
         if val is not None:
@@ -330,7 +331,7 @@ def _merge_game_fields(existing: Game, imported: Game) -> None:
     """Merge non-empty fields from imported game into existing."""
     merge_fields = [
         "status", "rating", "tags", "notes", "source_url",
-        "installed_version_raw", "confidence"
+        "installed_version_raw", "confidence", "card_artwork_path"
     ]
 
     for field in merge_fields:

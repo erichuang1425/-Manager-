@@ -32,12 +32,23 @@ class UIMixin:
         start = time.perf_counter()
         self._render_count += 1
         self.grid.set_games(self._filtered)
-        if hasattr(self, "_update_dashboard_cards"):
-            self._update_dashboard_cards()
+        if (
+            hasattr(self, "home_page")
+            and hasattr(self, "page_stack")
+            and self.page_stack.currentWidget() is self.home_page
+        ):
+            self.home_page.refresh(self._all_games)
+        if hasattr(self, "pick_btn"):
+            self.pick_btn.setEnabled(bool(self._filtered))
         if self._selected_game_id is not None:
             g = self._get_game(self._selected_game_id)
             self.details.show_game(g)
-            self._ensure_details_visible()
+            if (
+                hasattr(self, "page_stack")
+                and hasattr(self, "library_page")
+                and self.page_stack.currentWidget() is self.library_page
+            ):
+                self._ensure_details_visible()
         self._apply_quick_filter_buttons()
         self._update_view_mode_buttons()
         self._update_browse_mode_buttons()
@@ -123,6 +134,7 @@ class UIMixin:
             else:
                 self._apply_details_visibility(initial=True)
         self.details_toggle.setEnabled(not self._focus_mode)
+        self._sync_toolbar_density()
         self.grid.refresh()
 
     def _on_splitter_moved(self: "MainWindow", *_args) -> None:
@@ -143,6 +155,7 @@ class UIMixin:
                 self._splitter.setSizes(sizes)
         self._settings["splitter_sizes"] = sizes
         self._persist_settings()
+        self._sync_toolbar_density()
 
     def _apply_filter_combo_defaults(self: "MainWindow") -> None:
         def set_if(combo: QComboBox, value: str):
@@ -156,7 +169,18 @@ class UIMixin:
         self._apply_quick_filter_buttons()
 
     def _persist_settings(self: "MainWindow") -> None:
-        self._config.save()
+        self._settings_dirty = True
+        timer = getattr(self, "_settings_save_timer", None)
+        if timer is None:
+            self._flush_settings()
+        else:
+            timer.start()
+
+    def _flush_settings(self: "MainWindow") -> None:
+        """Write pending settings once after a burst of UI changes."""
+        if getattr(self, "_settings_dirty", False):
+            self._config.save()
+            self._settings_dirty = False
 
     def _save_updates_prefs(self: "MainWindow") -> None:
         self._settings["updates_filter"] = self.updates._filter_mode
@@ -199,6 +223,7 @@ class UIMixin:
             if not self._details_visible:
                 self._details_widget.hide()
             self._splitter.setSizes(target)
+        self._sync_toolbar_density(content_width=target[1])
         self.grid.refresh()
 
     def _animate_splitter(self: "MainWindow", target_sizes: list) -> None:
@@ -217,6 +242,7 @@ class UIMixin:
         self._splitter.setSizes([220, self.width() - 520, 300 if self._details_visible else 0])
         self._settings["splitter_sizes"] = self._splitter.sizes()
         self._persist_settings()
+        self._sync_toolbar_density()
         self.grid.refresh()
 
     def _safe_refresh_ui(self: "MainWindow") -> None:
@@ -271,6 +297,7 @@ class UIMixin:
             )
 
         if bp == prev_bp:
+            self._sync_toolbar_density(bp)
             return
         self._current_breakpoint = bp
 
@@ -279,19 +306,31 @@ class UIMixin:
                 self.sidebar.set_collapsed(True, animate=True)
             if self._details_visible and not self._focus_mode:
                 self._apply_details_visibility(animate=True)
-            self._set_toolbar_compact(True)
         elif bp == "default":
             if hasattr(self, 'sidebar') and self.sidebar.is_collapsed():
                 self.sidebar.set_collapsed(False, animate=True)
             if self._details_visible and not self._focus_mode:
                 self._apply_details_visibility(animate=True)
-            self._set_toolbar_compact(False)
         else:  # expanded
             if hasattr(self, 'sidebar') and self.sidebar.is_collapsed():
                 self.sidebar.set_collapsed(False, animate=True)
             if self._details_visible and not self._focus_mode:
                 self._apply_details_visibility(animate=True)
-            self._set_toolbar_compact(False)
+        self._sync_toolbar_density(bp)
+
+    def _sync_toolbar_density(
+        self: "MainWindow",
+        breakpoint: str | None = None,
+        *,
+        content_width: int | None = None,
+    ) -> None:
+        """Use the toolbar's real content width, including an open details pane."""
+        if content_width is None:
+            sizes = self._splitter.sizes() if hasattr(self, "_splitter") else []
+            content_width = sizes[1] if len(sizes) == 3 else self.width()
+        compact = breakpoint == "compact" or self.width() < _BP_COMPACT
+        compact = compact or 0 < content_width < 940
+        self._set_toolbar_compact(compact)
 
     def _set_toolbar_compact(self: "MainWindow", compact: bool) -> None:
         """Collapse the primary toolbar buttons to icon-only in compact mode.
@@ -301,12 +340,19 @@ class UIMixin:
         shrink at narrow widths.
         """
         from app.ui.icons import AppIcons
+        if getattr(self, "_toolbar_compact", None) == compact:
+            return
+        self._toolbar_compact = compact
         if compact:
+            self.add_games_btn.setText(AppIcons.ACT_ADD)
             self.scan_btn.setText(AppIcons.ACT_SCAN)
             self.check_updates_btn.setText(AppIcons.NAV_UPDATES)
+            self.pick_btn.setText(AppIcons.UI_DICE)
         else:
-            self.scan_btn.setText(f"{AppIcons.ACT_SCAN}  Scan")
+            self.add_games_btn.setText(f"{AppIcons.ACT_ADD}  Add Games")
+            self.scan_btn.setText(f"{AppIcons.ACT_SCAN}  Scan Folder")
             self.check_updates_btn.setText(f"{AppIcons.NAV_UPDATES}  Updates")
+            self.pick_btn.setText(f"{AppIcons.UI_DICE}  Pick for me")
 
     def _bump_table_font(self: "MainWindow", table, base: int) -> None:
         f = table.font()

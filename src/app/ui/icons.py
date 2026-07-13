@@ -14,6 +14,7 @@ class AppIcons:
     """
 
     # Navigation — distinct, recognizable at 14-18px
+    NAV_HOME = "\U0001F3E0"       # House / Home landing page
     NAV_LIBRARY = "\U0001F3AE"    # Game controller / Library
     NAV_UPDATES = "\U0001F504"    # Counterclockwise arrows / Refresh
     NAV_HEALTH = "\U0001F6E1"     # Shield / Health checks
@@ -70,6 +71,7 @@ class AppIcons:
     UI_FOCUS = "\u26f6"           # Square four corners / Focus (full-width) mode
     UI_DETAILS = "\u25e8"         # Square right-half black / Details side panel
     UI_SELECT = "\u2611"          # Ballot box with check / Multi-select mode
+    UI_DICE = "\u2684"            # Die / Pick for me
 
     @staticmethod
     def status_icon(status: str) -> str:
@@ -85,8 +87,12 @@ class AppIcons:
     def nav_icon(key: str) -> str:
         """Get the icon character for a navigation item."""
         return {
+            "home": AppIcons.NAV_HOME,
             "all": AppIcons.NAV_LIBRARY,
             "updates": AppIcons.NAV_UPDATES,
             "health": AppIcons.NAV_HEALTH,
+            "downloads": AppIcons.ACT_DOWNLOAD,
+            "import": AppIcons.ACT_IMPORT,
+            "settings": AppIcons.ACT_SETTINGS,
             "tools": AppIcons.NAV_TOOLS,
         }.get(key, AppIcons.NAV_COLLECTION)

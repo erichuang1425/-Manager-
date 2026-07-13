@@ -45,6 +45,7 @@ class GameGrid(QWidget):
     rating_changed = Signal(str, object)
     tag_filter_requested = Signal(str)
     scan_requested = Signal()            # emitted when user clicks scan from empty state
+    import_requested = Signal()          # emitted when user clicks import from empty state
     selection_changed = Signal(list)     # list of selected game_ids
     browse_mode_changed = Signal(str)    # "scroll" or "pages"
     page_changed = Signal(int)           # current page (0-indexed)
@@ -261,6 +262,27 @@ class GameGrid(QWidget):
     def clear_focus(self) -> None:
         self.view.clear_focus()
 
+    def reveal_game(self, game_id: str) -> bool:
+        """Bring a game into view, including switching to its page if needed."""
+        all_games = self.model.all_games()
+        absolute_row = next(
+            (index for index, game in enumerate(all_games) if game.game_id == game_id),
+            -1,
+        )
+        if absolute_row < 0:
+            return False
+        if self.model.is_paged():
+            self.go_to_page(absolute_row // self.model.page_size())
+        row = self.model.row_for_game_id(game_id)
+        if row < 0:
+            return False
+        index = self.model.index(row, 0)
+        self.view.setCurrentIndex(index)
+        self.view.scrollTo(index)
+        self.game_selected.emit(game_id)
+        self.view.setFocus(Qt.OtherFocusReason)
+        return True
+
     # ------------------------------------------------------------------ #
     #  Empty state
     # ------------------------------------------------------------------ #
@@ -338,6 +360,7 @@ class GameGrid(QWidget):
         import_btn.setStyleSheet(secondary_btn_style(theme))
         import_btn.setCursor(Qt.PointingHandCursor)
         import_btn.setToolTip("Import a previously exported library JSON file")
+        import_btn.clicked.connect(lambda: self.import_requested.emit())
         btn_row.addWidget(import_btn)
 
         btn_row.addStretch(1)

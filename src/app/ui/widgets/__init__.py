@@ -15,3 +15,7 @@ from .search_bar import (
 )
 from .downloads_panel import DownloadsPanel, DownloadItemWidget
 from .password_manager import PasswordManagerWidget
+from .import_page import ImportPage
+from .settings_page import SettingsPage
+from .home_page import HomePage
+from .game_artwork import GameArtwork

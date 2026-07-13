@@ -67,3 +67,6 @@ class Game:
     # Backup/versioning
     has_backup: bool = False             # Whether a backup exists
     backup_path: str = ""                # Path to version backup folder
+
+    # Card personalization
+    card_artwork_path: str = ""          # managed screenshot/image used as card background

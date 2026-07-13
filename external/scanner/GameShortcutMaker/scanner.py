@@ -1,10 +1,28 @@
 from __future__ import annotations
+import logging
 import os
 from typing import List, Tuple
 
 from rules import is_ignored
 from models import ExeCandidate
 from exe_scoring import score_exe
+
+logger = logging.getLogger(__name__)
+
+
+def _log_walk_error(exc: OSError) -> None:
+    """os.walk onerror handler: report and continue.
+
+    The default os.walk (onerror=None) silently swallows OSError, so a single
+    unreadable folder (permissions, path too long) would drop its whole subtree
+    from the scan with no feedback. Logging keeps that visible.
+    """
+    logger.warning("Skipping unreadable path during scan: %s", exc)
+
+
+def safe_walk(top: str, onerror=_log_walk_error):
+    """os.walk that surfaces unreadable directories instead of dropping them."""
+    return os.walk(top, onerror=onerror)
 
 
 def list_game_folders(game_root: str) -> list[str]:
@@ -25,12 +43,14 @@ def scan_game_folder_topmost_exes(game_folder: str, rules: dict) -> Tuple[int, L
     """
     Returns:
       (best_depth, non_ignored_exes_at_best_depth, all_exes_at_best_depth)
-    best_depth is the smallest depth where any exe exists (or -1 if none).
+    best_depth is the smallest depth holding a usable (non-ignored) .exe; if the
+    folder has only ignore-listed .exes it is the smallest depth of those
+    instead. -1 when no .exe exists at all.
     """
     all_by_depth: dict[int, list[str]] = {}
     non_ignored_by_depth: dict[int, list[str]] = {}
 
-    for dirpath, _, filenames in os.walk(game_folder):
+    for dirpath, _, filenames in safe_walk(game_folder):
         depth = _rel_depth(game_folder, dirpath)
         for fn in filenames:
             if fn.lower().endswith(".exe"):
@@ -42,8 +62,15 @@ def scan_game_folder_topmost_exes(game_folder: str, rules: dict) -> Tuple[int, L
     if not all_by_depth:
         return -1, [], []
 
-    best_depth = min(all_by_depth.keys())
-    all_best = sorted(all_by_depth[best_depth], key=lambda p: os.path.basename(p).lower())
+    # Pick the shallowest depth that holds a *usable* (non-ignored) .exe, so a
+    # junk executable sitting above the real launcher (e.g. an Inno Setup
+    # unins000.exe at the folder root with the game one level down in
+    # Game-Data) can't shadow it. Only when no usable .exe exists anywhere do
+    # we fall back to the shallowest depth of the ignore-listed ones, which the
+    # caller surfaces as a last resort.
+    src = non_ignored_by_depth or all_by_depth
+    best_depth = min(src.keys())
+    all_best = sorted(all_by_depth.get(best_depth, []), key=lambda p: os.path.basename(p).lower())
     non_ignored_best = sorted(non_ignored_by_depth.get(best_depth, []), key=lambda p: os.path.basename(p).lower())
     return best_depth, non_ignored_best, all_best
 
@@ -71,20 +98,92 @@ def build_candidates(
     return out
 
 def find_any_exe_exists(game_folder: str) -> bool:
-    for dirpath, _, filenames in os.walk(game_folder):
+    for dirpath, _, filenames in safe_walk(game_folder):
         for fn in filenames:
             if fn.lower().endswith(".exe"):
                 return True
     return False
 
 
+# Compressed-archive extensions. A game folder that holds only an archive is
+# almost always an un-extracted download, so it yields no launcher; detecting it
+# lets the scan tell the user to extract it instead of reporting a bare error.
+ARCHIVE_EXTS = {
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".tbz2", ".tbz",
+    ".xz", ".txz", ".zst", ".cab", ".iso", ".arj", ".lzh", ".lha", ".z",
+    ".001", ".r00",
+}
+
+
+def classify_no_launcher(game_folder: str) -> Tuple[str, List[str]]:
+    """Explain why a folder produced no launcher, for an actionable message.
+
+    Returns ``(category, archive_names)`` where category is:
+      * ``"empty"``   — the folder (recursively) holds no files at all
+      * ``"archive"`` — it holds at least one compressed archive (likely an
+                        un-extracted download); ``archive_names`` lists them
+      * ``"other"``   — it has files, but none usable as a launcher or archive
+
+    Called only when the normal scan found no .exe/.swf/HTML launcher, so the
+    caller can turn the generic "no launcher" error into specific guidance.
+    """
+    has_any_file = False
+    archives: List[str] = []
+    for _dirpath, _dirs, filenames in safe_walk(game_folder):
+        for fn in filenames:
+            has_any_file = True
+            if os.path.splitext(fn)[1].lower() in ARCHIVE_EXTS:
+                archives.append(fn)
+    if archives:
+        # De-dupe while keeping a stable, readable (case-insensitive) order.
+        ordered = sorted(archives, key=str.lower)
+        deduped = list(dict.fromkeys(ordered))
+        return "archive", deduped
+    if not has_any_file:
+        return "empty", []
+    return "other", []
+
+
 def scan_html_candidates(game_folder: str) -> list[str]:
     htmls = []
-    for dirpath, _, filenames in os.walk(game_folder):
+    for dirpath, _, filenames in safe_walk(game_folder):
         for fn in filenames:
             lf = fn.lower()
             if lf.endswith(".html") or lf.endswith(".htm"):
                 htmls.append(os.path.join(dirpath, fn))
     return htmls
+
+
+def scan_swf_candidates(game_folder: str) -> list[str]:
+    """Full paths of every .swf (Flash) file under `game_folder`.
+
+    Flash games ship a .swf as their entry point and usually have no .exe. The
+    scan treats a .swf as an exe-equivalent launcher (a .lnk straight to the
+    Flash file, opened by the user's default .swf handler) when no .exe exists,
+    so these games still get a shortcut instead of being reported as launcherless.
+    """
+    swfs = []
+    for dirpath, _, filenames in safe_walk(game_folder):
+        for fn in filenames:
+            if fn.lower().endswith(".swf"):
+                swfs.append(os.path.join(dirpath, fn))
+    return swfs
+
+
+def build_topmost_swf_candidates(game_folder: str, base_title: str) -> List[ExeCandidate]:
+    """Exe-equivalent candidates for the shallowest .swf (Flash) files, or [].
+
+    Mirrors the topmost-exe contract: only the .swf files at the smallest depth
+    are offered (deeper ones are usually bundled sub-content), each scored and
+    returned as an ExeCandidate so a Flash launcher flows through the exact same
+    picker / auto-pick / version logic as an .exe. The caller uses this only when
+    there is no usable (non-ignored) .exe, so a real launcher always wins.
+    """
+    swfs = scan_swf_candidates(game_folder)
+    if not swfs:
+        return []
+    swf_depth = min(_rel_depth(game_folder, os.path.dirname(p)) for p in swfs)
+    topmost = [p for p in swfs if _rel_depth(game_folder, os.path.dirname(p)) == swf_depth]
+    return build_candidates(game_folder, base_title, swf_depth, topmost)
 
 

@@ -5,16 +5,104 @@ import time
 import pathlib
 import glob
 
+from icon_extract import resolve_shortcut_icon
+
 
 try:
-    import win32com.client  # type: ignore
+    import pythoncom  # type: ignore
+    from win32com.shell import shell  # type: ignore
 except Exception:
-    win32com = None
+    pythoncom = None
+    shell = None
+
+
+# Windows path length limit. The shell link API rejects a Targetpath at/above
+# this, so we treat an over-length target as a distinct, recoverable case (8.3
+# short-path fallback).
+_MAX_PATH = 260
+
+# IShellLink::GetPath flag: return the target exactly as stored, with no
+# environment-variable expansion or UNC rewriting. We want the verbatim path so
+# stale-target detection compares like-for-like.
+_SLGP_RAWPATH = 4
 
 
 def ensure_windows_shortcut_support():
-    if win32com is None:
+    if pythoncom is None or shell is None:
         raise RuntimeError("pywin32 is required. Install: python -m pip install pywin32")
+
+
+def _ensure_com_initialized() -> None:
+    """Initialize a COM apartment on the current thread for the shell-link API.
+
+    Shortcuts are written/read from QThread workers, which have no COM apartment
+    of their own. The old ``win32com.client.Dispatch`` path initialized COM
+    implicitly; ``pythoncom.CoCreateInstance`` does not, so we do it here.
+
+    ``CoInitialize`` is reference-counted and returns S_FALSE (no exception)
+    when the apartment is already initialized; it raises only RPC_E_CHANGED_MODE
+    when the thread already joined a different (MTA) apartment, which is still
+    fine for an in-proc shell link — so any error is safely ignored.
+    """
+    try:
+        pythoncom.CoInitialize()
+    except Exception:
+        pass
+
+
+def categorize_apply_error(detail: str) -> str:
+    """Bucket a raw per-item apply error into a coarse, user-facing category.
+
+    `detail` is the message captured in the apply loop (typically the string of
+    the underlying exception). Matching is done on lowercased substrings so it
+    works for both Python OSError text and the Windows error phrasing surfaced
+    through pywin32 / WScript.Shell.
+    """
+    low = (detail or "").lower()
+    if "pywin32" in low or "win32com" in low or "win32" in low:
+        return "pywin32 not available (cannot create .lnk shortcuts)"
+    if (
+        "permission" in low
+        or "access is denied" in low
+        or "winerror 5" in low
+        or "errno 13" in low
+        or "read-only" in low
+        or "read only" in low
+    ):
+        return "Permission denied / read-only output folder"
+    if (
+        "too long" in low
+        or "filename or extension is too long" in low
+        or "winerror 206" in low
+        or "winerror 3" in low
+        or "errno 36" in low
+        or "errno 63" in low
+    ):
+        return "Path too long"
+    if (
+        "no such file" in low
+        or "cannot find" in low
+        or "not found" in low
+        or "winerror 2" in low
+        or "errno 2" in low
+    ):
+        return "File or path not found"
+    # Historical WScript.Shell phrasing for a rejected target (it choked on
+    # forward slashes and on any non-ANSI/CJK path — the reason we now write via
+    # the Unicode IShellLinkW interface). Kept as an explicit bucket so any
+    # recurrence stays diagnosable instead of disappearing into "Other error".
+    if "targetpath" in low or "can not be set" in low:
+        return "Invalid shortcut target (Targetpath rejected)"
+    return "Other error"
+
+
+def summarize_errors(details) -> dict:
+    """Count apply errors by category. Returns {category: count}."""
+    out: dict[str, int] = {}
+    for d in details or []:
+        cat = categorize_apply_error(d)
+        out[cat] = out.get(cat, 0) + 1
+    return out
 
 
 def safe_filename(name: str) -> str:
@@ -23,40 +111,213 @@ def safe_filename(name: str) -> str:
     return out if out else "Game"
 
 
+# Windows reserved device names (case-insensitive, with or without extension).
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
+
+
+def safe_path_segment(name: str) -> str:
+    """
+    Sanitize a single folder name so it is safe as a directory segment on Windows:
+    strips invalid characters, trailing dots/spaces, and avoids reserved device names.
+    """
+    seg = safe_filename(name)
+    seg = seg.rstrip(" .")
+    if not seg:
+        return "Folder"
+    if seg.split(".")[0].upper() in _RESERVED_NAMES:
+        seg = f"_{seg}"
+    return seg
+
+
+def safe_subpath(rel_posix: str) -> str:
+    """
+    Sanitize a POSIX-style relative path ("A/B/C") segment-by-segment.
+    Returns a POSIX-style path; empty input (a top-level game) returns "".
+    """
+    parts = [p for p in rel_posix.split("/") if p not in ("", ".")]
+    return "/".join(safe_path_segment(p) for p in parts)
+
+
+def _duplicate_glob(output_dir: str, base: str, ext: str) -> str:
+    """
+    Glob pattern matching numbered duplicates like 'Name (1).lnk'.
+
+    Both the output dir and the base name are passed through glob.escape so
+    metacharacters in game names (commonly '[' / ']', e.g. 'Game [Final]') are
+    matched literally instead of being parsed as glob character classes — which
+    would silently fail to match the real files.
+    """
+    return os.path.join(glob.escape(output_dir), f"{glob.escape(base)} (*).{ext}")
+
+
+def multi_shortcut_names(base_title: str, paths: list[str]) -> list[str]:
+    """Display names for one game's chosen launcher(s).
+
+    A single launcher keeps the plain game title. When the user picks several
+    launchers for one game we need distinct names: the first keeps the title and
+    the rest are suffixed with the launcher's file stem ("Cool Game - editor").
+    Collisions (same stem, or a suffix that matches the title) get a numeric
+    "(2)" tail so every returned name is unique (case-insensitively). Returns one
+    name per input path, in order.
+    """
+    if not paths:
+        return []
+    if len(paths) == 1:
+        return [base_title]
+
+    names: list[str] = []
+    used: set[str] = set()
+    for idx, p in enumerate(paths):
+        if idx == 0:
+            candidate = base_title
+        else:
+            stem = os.path.splitext(os.path.basename(p))[0]
+            candidate = f"{base_title} - {stem}" if stem else base_title
+
+        unique = candidate
+        n = 2
+        while unique.lower() in used:
+            unique = f"{candidate} ({n})"
+            n += 1
+        used.add(unique.lower())
+        names.append(unique)
+    return names
+
+
 def shortcut_path(output_dir: str, display_name: str) -> str:
     return os.path.join(output_dir, f"{safe_filename(display_name)}.lnk")
 
 
-def create_or_replace_shortcut(lnk_path: str, target_path: str) -> None:
+def to_windows_path(path: str) -> str:
+    """Normalize separators to Windows backslashes for the shell-link COM API.
+
+    A game root entered with forward slashes (e.g. 'D:/Games/...') flows straight
+    into each .exe target via os.path.join. ``IShellLink`` tolerates forward
+    slashes but stores the target back in backslash form, so normalizing up front
+    keeps the written target identical to what ``read_shortcut_target`` reads
+    back — which stale-target detection (``target_moved``) compares exactly.
+    (The previous WScript.Shell implementation went further and rejected forward
+    slashes outright with "Property '<unknown>.Targetpath' can not be set.")
+
+    The conversion is done explicitly rather than via os.path.normpath, which is
+    a no-op for '/' on non-Windows hosts, so the result is deterministic
+    wherever the tests run.
+    """
+    return path.replace("/", "\\") if path else path
+
+
+def short_path(path: str) -> str:
+    """Return the Windows 8.3 short path for an existing file, else `path`.
+
+    The shell-link API rejects a target that exceeds MAX_PATH (260). The 8.3
+    short path points at the same file with a much shorter string, so it is our
+    fallback when a long target is rejected.
+
+    Best-effort and side-effect free: returns the input unchanged when pywin32 /
+    win32api is unavailable (e.g. on the non-Windows test host), when the file
+    does not exist, or when the volume has 8.3 name generation disabled — callers
+    must compare against the input and only use a genuinely shorter result.
+    """
+    if not path:
+        return path
+    try:
+        import win32api  # type: ignore
+        return win32api.GetShortPathName(path)
+    except Exception:
+        return path
+
+
+def _new_shell_link():
+    """Create a fresh IShellLinkW COM object (Unicode shell-link interface)."""
+    return pythoncom.CoCreateInstance(
+        shell.CLSID_ShellLink, None,
+        pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink,
+    )
+
+
+def create_or_replace_shortcut(lnk_path: str, target_path: str, icon_cache_dir: str | None = None) -> None:
     ensure_windows_shortcut_support()
-    shell = win32com.client.Dispatch("WScript.Shell")
-    sc = shell.CreateShortcut(lnk_path)
-    sc.Targetpath = target_path
-    sc.WorkingDirectory = os.path.dirname(target_path)
-    sc.IconLocation = target_path
-    sc.Save()
+    # Normalize separators to backslashes so the stored target matches the
+    # backslash form the link reads back, keeping stale-target detection exact.
+    lnk_path = to_windows_path(lnk_path)
+    target_path = to_windows_path(target_path)
+    _ensure_com_initialized()
+
+    def _write(target: str) -> None:
+        # A fresh link object per attempt: a half-configured one left over from a
+        # rejected assignment must not leak into the retry. We use the Unicode
+        # IShellLinkW interface directly rather than WScript.Shell, whose
+        # late-bound Targetpath setter (and getter) round-trips through the
+        # system ANSI code page and rejects/corrupts any path with characters
+        # outside it — i.e. every CJK target on a non-Latin system locale.
+        link = _new_shell_link()
+        link.SetPath(target)
+        link.SetWorkingDirectory(os.path.dirname(target))
+        # Default Explorer behavior is icon index 0 of the target, but that's
+        # sometimes a tiny frame even when the .exe embeds a larger icon in a
+        # later group — the "small icon centered in a white tile" case. Pick the
+        # largest embedded icon, upscaling a synthesized .ico when even that is
+        # too small to fill a tile. Degrades to (target, 0) if extraction fails.
+        icon_path, icon_index = resolve_shortcut_icon(target, icon_cache_dir)
+        link.SetIconLocation(icon_path, icon_index)
+        link.QueryInterface(pythoncom.IID_IPersistFile).Save(lnk_path, 0)
+
+    try:
+        _write(target_path)
+        return
+    except Exception as err:
+        # The target was rejected. The usual remaining cause (forward slashes are
+        # already normalized away, and non-ANSI paths now go through the Unicode
+        # interface) is a path over MAX_PATH; retry with the 8.3 short path, which
+        # is the same file but short enough to be accepted.
+        short = short_path(target_path)
+        if short and short != target_path:
+            try:
+                _write(short)
+                return
+            except Exception:
+                pass
+        # Still failing: re-raise with the actual target and its length so the
+        # apply log pinpoints the cause instead of repeating the opaque message.
+        # Wording an over-length target as "too long" routes it to the dedicated
+        # category in categorize_apply_error; anything else stays a Targetpath
+        # rejection.
+        n = len(target_path)
+        hint = f" — target path is too long ({n} chars, exceeds Windows MAX_PATH {_MAX_PATH})" if n >= _MAX_PATH else ""
+        raise RuntimeError(f"{err} [target={target_path!r}, length={n}]{hint}") from err
 
 
 def read_shortcut_target(lnk_path: str) -> str:
     ensure_windows_shortcut_support()
-    shell = win32com.client.Dispatch("WScript.Shell")
-    sc = shell.CreateShortcut(lnk_path)
+    lnk_path = to_windows_path(lnk_path)
+    _ensure_com_initialized()
     try:
-        return sc.Targetpath or ""
+        link = _new_shell_link()
+        link.QueryInterface(pythoncom.IID_IPersistFile).Load(lnk_path)
+        # GetPath(fFlags, cchMaxPath) -> (path, find_data). The Unicode interface
+        # preserves CJK targets verbatim, where WScript.Shell's getter replaced
+        # any non-ANSI character with '?' and so made stale-target detection
+        # (target_moved) compare against a corrupted path.
+        path, _ = link.GetPath(_SLGP_RAWPATH, _MAX_PATH * 4)
+        return path or ""
     except Exception:
         return ""
 
 
-def backup_shortcut(lnk_path: str, backup_dir: str) -> str:
+def backup_shortcut(lnk_path: str, backup_dir: str, name_prefix: str = "") -> str:
     """
     Copy existing shortcut to backup dir. Returns backup path, or "".
+
+    name_prefix lets callers disambiguate same-named shortcuts that live in
+    different output subfolders (collections), avoiding backup name collisions.
     """
     if not os.path.exists(lnk_path):
         return ""
     os.makedirs(backup_dir, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
-    base = os.path.basename(lnk_path)
-    dst = os.path.join(backup_dir, f"{os.path.splitext(base)[0]}_{ts}.lnk")
+    stem = os.path.splitext(os.path.basename(lnk_path))[0]
+    prefix = f"{safe_path_segment(name_prefix)}__" if name_prefix else ""
+    dst = os.path.join(backup_dir, f"{prefix}{stem}_{ts}.lnk")
     shutil.copy2(lnk_path, dst)
     return dst
 
@@ -107,11 +368,11 @@ def find_existing_shortcut(output_dir: str, display_name: str) -> tuple[str, str
     base = safe_filename(display_name)
 
     # Fallback: find duplicates (Name (1).lnk etc.)
-    dup_lnk = sorted(glob.glob(os.path.join(output_dir, f"{base} (*).lnk")))
+    dup_lnk = sorted(glob.glob(_duplicate_glob(output_dir, base, "lnk")))
     if dup_lnk:
         return dup_lnk[0], "exe"
 
-    dup_url = sorted(glob.glob(os.path.join(output_dir, f"{base} (*).url")))
+    dup_url = sorted(glob.glob(_duplicate_glob(output_dir, base, "url")))
     if dup_url:
         return dup_url[0], "html"
 
@@ -126,8 +387,8 @@ def cleanup_duplicate_shortcuts(output_dir: str, display_name: str) -> None:
     base = safe_filename(display_name)
 
     patterns = [
-        os.path.join(output_dir, f"{base} (*).lnk"),
-        os.path.join(output_dir, f"{base} (*).url"),
+        _duplicate_glob(output_dir, base, "lnk"),
+        _duplicate_glob(output_dir, base, "url"),
     ]
     for pat in patterns:
         for p in glob.glob(pat):
@@ -173,3 +434,36 @@ def read_url_shortcut_target(url_path: str) -> str:
     except Exception:
         pass
     return ""
+
+
+def normalize_target_for_compare(p: str) -> str:
+    """Normalize a launcher path so two spellings of the same target compare equal.
+
+    Windows paths are case-insensitive and may arrive with either separator (a
+    game root entered as 'D:/Games' yields forward slashes; a target read back
+    from a .lnk comes back with backslashes). Lower-casing and unifying the
+    separator lets us tell whether a recorded shortcut still points at the file
+    we would target now.
+    """
+    if not p:
+        return ""
+    return p.replace("\\", "/").rstrip("/").lower()
+
+
+def target_moved(existing_target: str, new_target: str) -> bool:
+    """True when a recorded shortcut target no longer matches the launcher we'd
+    create now — i.e. the underlying files were relocated (typically by Flatten),
+    so the existing shortcut points at a stale path and should be refreshed.
+
+    Conservative by design:
+      * Returns False when either target is unknown (no recorded target to
+        compare), so a missing/partial index never forces a needless replace.
+      * Returns False for URL-form recorded targets ('file://…', 'http://…'),
+        which a .url read-back can yield and which aren't directly comparable to
+        a plain filesystem path.
+    """
+    if not existing_target or not new_target:
+        return False
+    if existing_target.lower().startswith(("file:", "http:", "https:")):
+        return False
+    return normalize_target_for_compare(existing_target) != normalize_target_for_compare(new_target)

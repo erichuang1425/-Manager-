@@ -53,7 +53,7 @@ class LibrarySidebar(QWidget):
         # Sidebar header
         header = QHBoxLayout()
         header.setContentsMargins(theme.spacing_lg, theme.spacing_sm, theme.spacing_md, theme.spacing_md)
-        self._title_label = QLabel(f"{AppIcons.NAV_LIBRARY}  Game Library\nManager")
+        self._title_label = QLabel(f"{AppIcons.NAV_LIBRARY}  Game Library")
         self._title_label.setStyleSheet(
             f"font-size: 16px; font-weight: 700; color: {theme.text.name()}; line-height: 125%; "
             f"background: transparent; border: none;"
@@ -91,8 +91,9 @@ class LibrarySidebar(QWidget):
 
         layout.addWidget(self.list, 1)
 
-        help_card = QLabel("All your games.\nOrganized and healthy.\n\nWe manage shortcut-based libraries, updates, health checks, and notes so you can just play.")
+        help_card = QLabel("Tip: drag a game onto a manual collection to organize it.")
         help_card.setWordWrap(True)
+        help_card.setMaximumHeight(84)
         help_card.setStyleSheet(
             f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {theme.surface_alt.name(QColor.HexArgb)}, stop:1 rgba({theme.accent.red()},{theme.accent.green()},{theme.accent.blue()},38)); "
             f"border: 1px solid {theme.outline.name(QColor.HexArgb)}; border-radius: {theme.radius_lg}px; "
@@ -124,6 +125,9 @@ class LibrarySidebar(QWidget):
 
         self._collections: List[Collection] = []
         self._games = None
+        self._updates_count = 0
+        self._health_count = 0
+        self._downloads_count = 0
 
         # Animation for collapse/expand
         self._width_anim = QPropertyAnimation(self, b"maximumWidth", self)
@@ -140,7 +144,10 @@ class LibrarySidebar(QWidget):
         self._collections = collections or []
         key = self.current_key() or "all"
         all_count = len(self._games) if self._games else 0
-        self.populate(all_count, 0, 0, self._collections, key)
+        self.populate(
+            all_count, self._updates_count, self._health_count,
+            self._collections, key, self._downloads_count,
+        )
 
     def populate(
         self,
@@ -149,7 +156,11 @@ class LibrarySidebar(QWidget):
         health_count: int,
         collections: List[Collection],
         selected_key: str = "all",
+        downloads_count: int = 0,
     ) -> None:
+        self._updates_count = updates_count
+        self._health_count = health_count
+        self._downloads_count = downloads_count
         self._collections = collections or []
         self.list.blockSignals(True)
         self.list.clear()
@@ -158,6 +169,7 @@ class LibrarySidebar(QWidget):
         max_w = max(160, self.list.viewport().width() - 24)
 
         if self._collapsed:
+            self._add_icon_item(AppIcons.NAV_HOME, "Home", -1, "home")
             self._add_icon_item(AppIcons.NAV_LIBRARY, "All Games", all_count, "all")
             for c in sorted(
                 [c for c in self._collections if c.type == "manual"],
@@ -179,36 +191,45 @@ class LibrarySidebar(QWidget):
                 )
             self._add_icon_item(AppIcons.NAV_UPDATES, "Updates", updates_count, "updates")
             self._add_icon_item(AppIcons.NAV_HEALTH, "Health Checks", health_count, "health")
+            self._add_icon_item(AppIcons.ACT_DOWNLOAD, "Downloads", downloads_count, "downloads")
+            self._add_icon_item(AppIcons.ACT_IMPORT, "Add Games", -1, "import")
+            self._add_icon_item(AppIcons.ACT_SETTINGS, "Settings", -1, "settings")
         else:
+            self._add_nav_item(AppIcons.NAV_HOME, "Home", -1, "home", fm, max_w)
             self._add_nav_item(AppIcons.NAV_LIBRARY, "All Games", all_count, "all", fm, max_w)
 
-            self._add_section_header("COLLECTIONS")
             manual = sorted(
                 [c for c in self._collections if c.type == "manual"],
                 key=lambda x: x.name.lower(),
             )
-            for c in manual:
-                cnt = self._collection_count(c)
-                self._add_nav_item(
-                    AppIcons.NAV_COLLECTION, c.name, cnt,
-                    _collection_key(c.collection_id), fm, max_w,
-                )
+            if manual:
+                self._add_section_header("COLLECTIONS")
+                for c in manual:
+                    cnt = self._collection_count(c)
+                    self._add_nav_item(
+                        AppIcons.NAV_COLLECTION, c.name, cnt,
+                        _collection_key(c.collection_id), fm, max_w,
+                    )
 
-            self._add_section_header("SMART")
             smart = sorted(
                 [c for c in self._collections if c.type == "smart"],
                 key=lambda x: x.name.lower(),
             )
-            for c in smart:
-                cnt = self._collection_count(c)
-                self._add_nav_item(
-                    AppIcons.NAV_SMART, c.name, cnt,
-                    _collection_key(c.collection_id), fm, max_w,
-                )
+            if smart:
+                self._add_section_header("SMART")
+                for c in smart:
+                    cnt = self._collection_count(c)
+                    self._add_nav_item(
+                        AppIcons.NAV_SMART, c.name, cnt,
+                        _collection_key(c.collection_id), fm, max_w,
+                    )
 
             self._add_section_header("TOOLS")
             self._add_nav_item(AppIcons.NAV_UPDATES, "Updates", updates_count, "updates", fm, max_w)
             self._add_nav_item(AppIcons.NAV_HEALTH, "Health Checks", health_count, "health", fm, max_w)
+            self._add_nav_item(AppIcons.ACT_DOWNLOAD, "Downloads", downloads_count, "downloads", fm, max_w)
+            self._add_nav_item(AppIcons.ACT_IMPORT, "Add Games", -1, "import", fm, max_w)
+            self._add_nav_item(AppIcons.ACT_SETTINGS, "Settings", -1, "settings", fm, max_w)
 
         # Select the item while signals are still blocked.  Callers always
         # handle state updates (e.g. _apply_search) explicitly, so emitting
@@ -269,7 +290,10 @@ class LibrarySidebar(QWidget):
         # Repopulate with collapsed/expanded items
         key = self.current_key() or "all"
         all_count = len(self._games) if self._games else 0
-        self.populate(all_count, 0, 0, self._collections, key)
+        self.populate(
+            all_count, self._updates_count, self._health_count,
+            self._collections, key, self._downloads_count,
+        )
         self.collapse_toggled.emit(collapsed)
 
     def _on_collapse_anim_finished(self, collapsed: bool) -> None:
@@ -284,8 +308,12 @@ class LibrarySidebar(QWidget):
 
     def select_by_index(self, index: int) -> None:
         """Select a sidebar item by index (for keyboard shortcuts)."""
-        if 0 <= index < self.list.count():
-            self.list.setCurrentRow(index)
+        selectable_rows = [
+            row for row in range(self.list.count())
+            if self.list.item(row) and self.list.item(row).data(Qt.UserRole)
+        ]
+        if 0 <= index < len(selectable_rows):
+            self.list.setCurrentRow(selectable_rows[index])
 
     # ---- private helpers ----
     def _update_collapsed_visuals(self) -> None:
@@ -321,11 +349,11 @@ class LibrarySidebar(QWidget):
         self, icon: str, label: str, count: int,
         key: str, fm, max_w: int,
     ) -> None:
-        count_str = ""
+        count_str = f"  ·  {count}" if count >= 0 else ""
         display = f"{icon}  {label}{count_str}"
         elided = fm.elidedText(display, Qt.ElideRight, max_w)
         item = QListWidgetItem(elided)
-        item.setToolTip(f"{label} ({count})" if count else label)
+        item.setToolTip(f"{label} ({count})" if count >= 0 else label)
         item.setData(Qt.UserRole, key)
         item.setSizeHint(item.sizeHint().__class__(item.sizeHint().width(), 38))
         self.list.addItem(item)
@@ -334,7 +362,7 @@ class LibrarySidebar(QWidget):
         """Add an icon-only item for collapsed mode."""
         item = QListWidgetItem(icon)
         item.setTextAlignment(Qt.AlignCenter)
-        item.setToolTip(f"{label} ({count})" if count else label)
+        item.setToolTip(f"{label} ({count})" if count >= 0 else label)
         item.setData(Qt.UserRole, key)
         item.setSizeHint(item.sizeHint().__class__(self._collapsed_width - 8, 38))
         self.list.addItem(item)

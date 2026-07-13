@@ -43,6 +43,7 @@ def merge_scanned_into_library(existing: List[Game], scanned: List[Game]) -> Lis
                 s.game_folder_path = e.game_folder_path
             # Keep icon cache flag so we don't re-prime icons unnecessarily.
             s.icon_upscaled = getattr(e, "icon_upscaled", False)
+            s.card_artwork_path = getattr(e, "card_artwork_path", "")
 
         merged.append(s)
 

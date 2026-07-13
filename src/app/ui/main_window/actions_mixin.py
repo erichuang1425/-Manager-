@@ -35,6 +35,10 @@ class ActionsMixin:
 
         # Import: Ctrl+I
         QShortcut(QKeySequence("Ctrl+I"), self, self._show_import_dialog)
+        QShortcut(QKeySequence("Ctrl+Shift+I"), self, self._on_import_shortcuts_clicked)
+
+        # Full settings page
+        QShortcut(QKeySequence("Ctrl+,"), self, self._open_preferences)
 
         # Toggle details panel: Ctrl+D
         QShortcut(QKeySequence("Ctrl+D"), self, self._toggle_details_panel)
@@ -94,6 +98,9 @@ class ActionsMixin:
 
         # Check updates: Ctrl+U
         QShortcut(QKeySequence("Ctrl+U"), self, self._on_check_updates_fetch)
+
+        # Pick a game from the current context: Ctrl+P
+        QShortcut(QKeySequence("Ctrl+P"), self, self._show_random_picker)
 
         # Show shortcuts help: Ctrl+Shift+/
         QShortcut(QKeySequence("Ctrl+Shift+/"), self, self._show_shortcuts_help)
@@ -217,6 +224,8 @@ class ActionsMixin:
             msg = f"Added: {stats.get('added', 0)}, Updated: {stats.get('updated', 0)}, Skipped: {stats.get('skipped', 0)}"
             show_success(f"Import complete. {msg}")
             self.statusBar().showMessage(msg, 5000)
+            if hasattr(self, "import_page"):
+                self.import_page.set_result(f"Library import complete. {msg}")
 
         except Exception as e:
             show_error(f"Import failed: {e}")

@@ -9,7 +9,7 @@ from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QSplitter, QMenu, QToolButton, QApplication, QFrame, QMessageBox,
-    QWidgetAction,
+    QWidgetAction, QStackedWidget,
 )
 
 from app.models import Game, Collection
@@ -20,7 +20,8 @@ from app.storage import library_json_path, settings_json_path
 from app.logging_utils import connect_safe, get_logger, kv, RateLimiter, wrap_slot
 from app.ui.widgets import (
     GameGrid, DetailsPanel, FilterChipsBar, BatchToolbar,
-    HealthChecksWidget, UpdatesWidget,
+    HealthChecksWidget, UpdatesWidget, DownloadsPanel, ImportPage, SettingsPage,
+    HomePage,
 )
 from app.ui.widgets.library_sidebar import LibrarySidebar
 from app.ui.theme import (
@@ -163,6 +164,15 @@ class MainWindow(
         self._save_timer.timeout.connect(self._flush_save)
         self._save_dirty = False
 
+        # Settings controls and splitter drags can emit many changes in a few
+        # milliseconds. Persist once after the interaction settles so disk I/O
+        # never sits inside the drag/typing hot path.
+        self._settings_save_timer = QTimer(self)
+        self._settings_save_timer.setSingleShot(True)
+        self._settings_save_timer.setInterval(400)
+        self._settings_save_timer.timeout.connect(self._flush_settings)
+        self._settings_dirty = False
+
         # Worker handles
         self._scan_thread = None
         self._scan_worker = None
@@ -190,6 +200,7 @@ class MainWindow(
         """Build the redesigned main UI layout."""
         theme = current_theme()
         root = QWidget()
+        root.setObjectName("appRoot")
         self.setCentralWidget(root)
 
         outer = QVBoxLayout(root)
@@ -201,7 +212,7 @@ class MainWindow(
         self._set_startup_status("Loading library\u2026")
 
         root.setStyleSheet(
-            f"QWidget {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, "
+            f"QWidget#appRoot {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, "
             f"stop:0 {theme.bg.name(QColor.HexArgb)}, stop:0.55 {theme.surface_sunken.name(QColor.HexArgb)}, "
             f"stop:1 rgba({theme.accent.red()},{theme.accent.green()},{theme.accent.blue()},55)); }}"
         )
@@ -318,12 +329,22 @@ class MainWindow(
     def _build_tools_menu(self, theme) -> None:
         """Build the tools dropdown menu."""
         tools_menu = QMenu(self)
+        act_add_shortcuts = QAction(f"{AppIcons.ACT_ADD}  Add Shortcut Files...", self)
+        act_add_shortcuts.triggered.connect(self._on_import_shortcuts_clicked)
+        act_scan_folder = QAction(f"{AppIcons.ACT_SCAN}  Scan Shortcut Folder...", self)
+        act_scan_folder.triggered.connect(self._choose_and_scan_root)
+        act_library_import = QAction(f"{AppIcons.ACT_IMPORT}  Import Library Backup...", self)
+        act_library_import.triggered.connect(self._show_import_dialog)
         act_bulk = QAction("Bulk Source URLs\u2026", self)
         act_bulk.triggered.connect(self._open_bulk_sources)
         act_bulk_archive = QAction("Bulk Archive Import\u2026", self)
         act_bulk_archive.triggered.connect(self._open_bulk_archive_import)
-        act_scan = QAction("Scanner", self)
+        act_scan = QAction("Open Shortcut Maker...", self)
         act_scan.triggered.connect(self._open_scanner_project)
+        tools_menu.addAction(act_add_shortcuts)
+        tools_menu.addAction(act_scan_folder)
+        tools_menu.addAction(act_library_import)
+        tools_menu.addSeparator()
         tools_menu.addAction(act_bulk)
         tools_menu.addAction(act_bulk_archive)
         tools_menu.addAction(act_scan)
@@ -364,7 +385,8 @@ class MainWindow(
         content.setMinimumWidth(480)
 
         # -- Top bar: search left, view/filter controls right (matches compact dashboard layout) --
-        topbar = QHBoxLayout()
+        self.library_topbar = QWidget()
+        topbar = QHBoxLayout(self.library_topbar)
         topbar.setContentsMargins(0, 0, 0, 0)
         topbar.setSpacing(theme.spacing_md)
 
@@ -375,7 +397,7 @@ class MainWindow(
             "Advanced: status:playing, tag:rpg, rating:>7, has:source"
         )
         self.search.setClearButtonEnabled(True)
-        self.search.setMinimumWidth(420)
+        self.search.setMinimumWidth(220)
         self.search.setMaximumWidth(620)
         self.search.setMinimumHeight(44)
         self.search.setStyleSheet(
@@ -399,51 +421,33 @@ class MainWindow(
         topbar.addWidget(self.view_btn)
         self._build_tools_menu(theme)
         topbar.addWidget(self.tools_btn)
-        content_layout.addLayout(topbar)
-
-        hero = QFrame()
-        hero.setMinimumHeight(220)
-        hero.setMaximumHeight(260)
-        hero.setStyleSheet(
-            f"QFrame {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, "
-            f"stop:0 rgba(9,13,22,235), stop:0.52 rgba(22,37,48,220), "
-            f"stop:1 rgba({theme.accent.red()},{theme.accent.green()},{theme.accent.blue()},85)); "
-            f"border: 1px solid {theme.outline.name(QColor.HexArgb)}; "
-            f"border-radius: {theme.radius_lg}px; }} QLabel {{ background: transparent; border: none; }}"
-        )
-        hero_l = QVBoxLayout(hero)
-        hero_l.setContentsMargins(30, 24, 30, 24)
-        kicker = QLabel("FEATURED")
-        kicker.setStyleSheet(section_header_style(theme) + "padding:0;")
-        hero_title = QLabel("Elden Ring")
-        hero_title.setStyleSheet(f"font-size: 36px; font-weight: 700; color: {theme.text.name()};")
-        hero_desc = QLabel("A vast world of mystery and peril, where your choices shape the legend you become.")
-        hero_desc.setWordWrap(True)
-        hero_desc.setMaximumWidth(430)
-        hero_desc.setStyleSheet(f"font-size: 14px; color: {theme.text.name()};")
-        hero_actions = QHBoxLayout()
-        hero_actions.setSpacing(theme.spacing_sm)
-        hero_launch = QPushButton(f"{AppIcons.ACT_PLAY}  Launch")
-        hero_launch.setStyleSheet(primary_btn_style(theme))
-        hero_details = QPushButton(f"{AppIcons.UI_DETAILS}  Details")
-        hero_details.setStyleSheet(secondary_btn_style(theme))
-        hero_actions.addWidget(hero_launch)
-        hero_actions.addWidget(hero_details)
-        hero_actions.addStretch(1)
-        hero_l.addWidget(kicker)
-        hero_l.addStretch(1)
-        hero_l.addWidget(hero_title)
-        hero_l.addWidget(hero_desc)
-        hero_l.addSpacing(theme.spacing_md)
-        hero_l.addLayout(hero_actions)
-        content_layout.addWidget(hero)
 
         # -- Library controls --
-        toolbar = QHBoxLayout()
+        self.library_toolbar_widget = QWidget()
+        toolbar = QHBoxLayout(self.library_toolbar_widget)
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(theme.spacing_sm)
 
-        self.scan_btn = QPushButton(f"{AppIcons.ACT_SCAN}  Scan")
+        self.add_games_btn = QToolButton()
+        self.add_games_btn.setText(f"{AppIcons.ACT_ADD}  Add Games")
+        self.add_games_btn.setPopupMode(QToolButton.MenuButtonPopup)
+        self.add_games_btn.setStyleSheet(primary_btn_style(theme))
+        self.add_games_btn.setCursor(Qt.PointingHandCursor)
+        self.add_games_btn.setToolTip("Add shortcut files, scan a folder, or import a backup")
+        self.add_games_btn.clicked.connect(self._on_import_shortcuts_clicked)
+        add_menu = QMenu(self)
+        add_shortcuts = QAction("Add Shortcut Files...", self)
+        add_shortcuts.triggered.connect(self._on_import_shortcuts_clicked)
+        scan_folder = QAction("Scan Shortcut Folder...", self)
+        scan_folder.triggered.connect(self._choose_and_scan_root)
+        import_backup = QAction("Import Library Backup...", self)
+        import_backup.triggered.connect(self._show_import_dialog)
+        import_archives = QAction("Import Game Archives...", self)
+        import_archives.triggered.connect(self._open_bulk_archive_import)
+        add_menu.addActions([add_shortcuts, scan_folder, import_backup, import_archives])
+        self.add_games_btn.setMenu(add_menu)
+
+        self.scan_btn = QPushButton(f"{AppIcons.ACT_SCAN}  Scan Folder")
         self.scan_btn.setStyleSheet(toolbar_btn_style(theme))
         self.scan_btn.setCursor(Qt.PointingHandCursor)
         self.scan_btn.setToolTip("Scan shortcuts root folder")
@@ -463,6 +467,12 @@ class MainWindow(
         updates_menu.addAction(act_open)
         self.check_updates_btn.setMenu(updates_menu)
 
+        self.pick_btn = QPushButton(f"{AppIcons.UI_DICE}  Pick for me")
+        self.pick_btn.setStyleSheet(toolbar_btn_style(theme))
+        self.pick_btn.setCursor(Qt.PointingHandCursor)
+        self.pick_btn.setToolTip("Choose a playable game from the current view (Ctrl+P)")
+        self.pick_btn.clicked.connect(lambda _=False: self._show_random_picker(self._filtered))
+
         self.pill_all = QPushButton("Your Library")
         self.pill_missing = QPushButton("Missing")
         self.pill_updates = QPushButton("Updates")
@@ -473,6 +483,8 @@ class MainWindow(
             btn.setStyleSheet(segmented_btn_style(theme, pos)); btn.clicked.connect(self._on_quick_filter)
             toolbar.addWidget(btn)
         toolbar.addStretch(1)
+        toolbar.addWidget(self.pick_btn)
+        toolbar.addWidget(self.add_games_btn)
         toolbar.addWidget(self.scan_btn)
         toolbar.addWidget(self.check_updates_btn)
 
@@ -483,13 +495,11 @@ class MainWindow(
         self.details_toggle.setChecked(self._details_visible); self.details_toggle.clicked.connect(self._toggle_details_panel)
         self.select_btn.clicked.connect(self._toggle_multi_select_mode)
         toolbar.addWidget(self.focus_btn); toolbar.addWidget(self.details_toggle); toolbar.addWidget(self.select_btn)
-        content_layout.addLayout(toolbar)
 
         # Filter chips bar
         self.filter_chips = FilterChipsBar()
         self.filter_chips.filter_removed.connect(self._on_filter_chip_removed)
         self.filter_chips.clear_all_clicked.connect(self._clear_all_filters)
-        content_layout.addWidget(self.filter_chips)
 
         # Batch toolbar
         self.batch_toolbar = BatchToolbar()
@@ -499,7 +509,6 @@ class MainWindow(
         self.batch_toolbar.select_all_clicked.connect(lambda: self.grid.select_all())
         self.batch_toolbar.clear_selection_clicked.connect(lambda: self.grid.clear_selection())
         self.batch_toolbar.exit_mode_clicked.connect(self._exit_multi_select_mode)
-        content_layout.addWidget(self.batch_toolbar)
 
         # Content title (shows current view name)
         self.content_title = QLabel("All Games")
@@ -507,7 +516,6 @@ class MainWindow(
             f"font-size: 13px; font-weight: 600; color: {theme.text.name()}; "
             f"padding: {theme.spacing_xs}px 0; background: transparent; border: none;"
         )
-        content_layout.addWidget(self.content_title)
 
         # Game grid
         self.grid = GameGrid()
@@ -519,6 +527,7 @@ class MainWindow(
         self.grid.rating_changed.connect(self._on_rating_changed)
         self.grid.tag_filter_requested.connect(self._on_tag_filter_requested)
         self.grid.scan_requested.connect(self._on_scan_clicked)
+        self.grid.import_requested.connect(self._show_import_dialog)
         self.grid.selection_changed.connect(self._on_selection_changed)
 
         # Health and Updates widgets
@@ -533,15 +542,65 @@ class MainWindow(
         self.updates.open_source_requested.connect(self._open_source_for_game)
         self.updates.mark_installed_requested.connect(self._mark_installed_from_source)
 
+        self.downloads = DownloadsPanel()
+
+        self.import_page = ImportPage()
+        self.import_page.set_root_folder(self._root_folder)
+        self.import_page.add_shortcuts_requested.connect(self._on_import_shortcuts_clicked)
+        self.import_page.scan_folder_requested.connect(self._choose_and_scan_root)
+        self.import_page.import_library_requested.connect(self._show_import_dialog)
+        self.import_page.bulk_sources_requested.connect(self._open_bulk_sources)
+        self.import_page.import_archives_requested.connect(self._open_bulk_archive_import)
+        self.import_page.shortcut_maker_requested.connect(self._open_scanner_project)
+
+        self.settings_page = SettingsPage()
+        self.settings_page.set_values(self._settings_snapshot())
+        self.settings_page.apply_requested.connect(self._apply_settings_values)
+        self.settings_page.choose_root_requested.connect(self._choose_root_folder)
+        self.settings_page.scan_requested.connect(self._on_scan_clicked)
+        self.settings_page.add_shortcuts_requested.connect(self._on_import_shortcuts_clicked)
+        self.settings_page.import_library_requested.connect(self._show_import_dialog)
+        self.settings_page.export_library_requested.connect(self._show_export_dialog)
+        self.settings_page.open_data_requested.connect(self._open_data_folder)
+        self.settings_page.theme_editor_requested.connect(self._open_theme_editor)
+        self.settings_page.layout_editor_requested.connect(self._open_layout_customization)
+
         self._apply_saved_widget_prefs()
 
-        content_layout.addWidget(self.grid, 1)
-        self.dashboard_cards = self._build_dashboard_cards(theme)
-        content_layout.addWidget(self.dashboard_cards)
-        content_layout.addWidget(self.health, 1)
-        content_layout.addWidget(self.updates, 1)
-        self.health.hide()
-        self.updates.hide()
+        # Home landing page (see HomePage). Play routes through the same launch
+        # path the grid uses; navigation tiles drive the sidebar selection.
+        self.home_page = HomePage()
+        self.home_page.game_play_requested.connect(self._on_game_play)
+        self.home_page.game_reveal_requested.connect(self._reveal_game)
+        self.home_page.pick_requested.connect(
+            lambda: self._show_random_picker(self._all_games)
+        )
+        self.home_page.navigate_requested.connect(self.sidebar.set_selected)
+
+        # Library page hosts all library-view chrome as one unit so it shows and
+        # hides together when the stack switches pages.
+        self.library_page = QWidget()
+        library_vbox = QVBoxLayout(self.library_page)
+        library_vbox.setContentsMargins(0, 0, 0, 0)
+        library_vbox.setSpacing(theme.spacing_md)
+        library_vbox.addWidget(self.library_topbar)
+        library_vbox.addWidget(self.library_toolbar_widget)
+        library_vbox.addWidget(self.filter_chips)
+        library_vbox.addWidget(self.batch_toolbar)
+        library_vbox.addWidget(self.content_title)
+        library_vbox.addWidget(self.grid, 1)
+
+        # Stacked content pages — exactly one visible at a time. The self-titled
+        # updates/health/downloads/import/settings widgets go in directly.
+        self.page_stack = QStackedWidget()
+        self.page_stack.addWidget(self.home_page)
+        self.page_stack.addWidget(self.library_page)
+        self.page_stack.addWidget(self.updates)
+        self.page_stack.addWidget(self.health)
+        self.page_stack.addWidget(self.downloads)
+        self.page_stack.addWidget(self.import_page)
+        self.page_stack.addWidget(self.settings_page)
+        content_layout.addWidget(self.page_stack, 1)
 
         # Keep hidden collection buttons for backward compatibility with mixins.
         # Must be created before _rebuild_sidebar() because sidebar population
@@ -559,89 +618,12 @@ class MainWindow(
 
         return content
 
-
-    def _build_dashboard_cards(self, theme) -> QWidget:
-        """Build the bottom dashboard summary strip from the dark reference."""
-        wrap = QWidget()
-        row = QHBoxLayout(wrap)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(theme.spacing_md)
-
-        def card(title: str, icon: str) -> tuple[QFrame, QVBoxLayout, QLabel]:
-            frame = QFrame()
-            frame.setStyleSheet(
-                f"QFrame {{ background: {theme.card.name(QColor.HexArgb)}; "
-                f"border: 1px solid {theme.card_border.name(QColor.HexArgb)}; "
-                f"border-radius: {theme.radius_lg}px; }} "
-                f"QFrame QLabel {{ background: transparent; border: none; }}"
-            )
-            frame.setMinimumHeight(118)
-            layout = QVBoxLayout(frame)
-            layout.setContentsMargins(theme.spacing_lg, theme.spacing_md, theme.spacing_lg, theme.spacing_md)
-            layout.setSpacing(theme.spacing_xs)
-            header = QLabel(f"{icon}  {title}")
-            header.setStyleSheet(
-                f"font-size: 12px; font-weight: 700; letter-spacing: 1px; "
-                f"color: {theme.text.name()}; text-transform: uppercase;"
-            )
-            layout.addWidget(header)
-            body = QLabel("")
-            body.setWordWrap(True)
-            body.setStyleSheet(f"font-size: 13px; color: {theme.text_muted.name()}; line-height: 130%;")
-            layout.addWidget(body, 1)
-            return frame, layout, body
-
-        recent_frame, _, self.recent_activity_body = card("Recent Activity", AppIcons.NAV_UPDATES)
-        updates_frame, updates_layout, self.update_summary_body = card("Update Summary", AppIcons.NAV_UPDATES)
-        self.update_summary_btn = QPushButton("View updates")
-        self.update_summary_btn.setStyleSheet(primary_btn_style(theme))
-        self.update_summary_btn.setCursor(Qt.PointingHandCursor)
-        self.update_summary_btn.clicked.connect(lambda: self.sidebar.set_selected("updates"))
-        updates_layout.addWidget(self.update_summary_btn, 0, Qt.AlignRight)
-        health_frame, _, self.health_overview_body = card("Health Overview", AppIcons.NAV_HEALTH)
-
-        row.addWidget(recent_frame, 1)
-        row.addWidget(updates_frame, 1)
-        row.addWidget(health_frame, 1)
-        return wrap
-
-    def _update_dashboard_cards(self) -> None:
-        """Refresh dashboard cards from the same library data as old views."""
-        if not hasattr(self, "recent_activity_body"):
-            return
-
-        recent = sorted(
-            [g for g in self._all_games if getattr(g, "last_played", None)],
-            key=lambda g: g.last_played,
-            reverse=True,
-        )[:2]
-        if recent:
-            self.recent_activity_body.setText("\n".join(f"Played {g.title}" for g in recent))
-        else:
-            self.recent_activity_body.setText("No recent launches yet. Select a game and press Launch to start tracking activity.")
-
-        update_games = [
-            g for g in self._all_games
-            if getattr(g, "source_version_raw", "")
-            and getattr(g, "installed_version_raw", "")
-            and g.source_version_raw != g.installed_version_raw
-        ]
-        names = ", ".join(g.title for g in update_games[:2])
-        if update_games:
-            suffix = f"\n{names}" if names else ""
-            self.update_summary_body.setText(f"{len(update_games)} updates available{suffix}")
-        else:
-            self.update_summary_body.setText("No tracked updates available. Check Updates to refresh source versions.")
-
-        missing_shortcuts = sum(1 for g in self._all_games if not getattr(g, "shortcut_path", ""))
-        missing_sources = sum(1 for g in self._all_games if not getattr(g, "source_url", ""))
-        issues = missing_shortcuts + missing_sources
-        if issues:
-            self.health_overview_body.setText(
-                f"{issues} items need attention. {missing_shortcuts} missing shortcuts, {missing_sources} missing sources."
-            )
-        else:
-            self.health_overview_body.setText(f"Good. {len(self._all_games)} games checked and no basic issues found.")
+    def _settings_snapshot(self) -> dict:
+        values = self._config.to_dict()
+        values["root_folder"] = self._root_folder
+        values["details_visible"] = self._details_visible
+        values["focus_mode"] = self._focus_mode
+        return values
 
     # ------------------------------------------------------------------ #
     #  Toolbar popovers (Filter / View)
@@ -861,6 +843,10 @@ class MainWindow(
         self.details = DetailsPanel()
         self.details.play_clicked.connect(self._on_game_play)
         self.details.game_changed.connect(self._on_game_changed)
+        self.details.artwork_capture_requested.connect(self._capture_card_artwork)
+        self.details.artwork_paste_requested.connect(self._paste_card_artwork)
+        self.details.artwork_choose_requested.connect(self._choose_card_artwork)
+        self.details.artwork_remove_requested.connect(self._remove_card_artwork)
 
         details_layout.addWidget(self.details, 1)
         return details
@@ -967,6 +953,10 @@ class MainWindow(
                games=len(self._all_games))
         )
 
+        # Land on Home. The sidebar populated with "all" selected, so selecting
+        # "home" here emits nav_changed and switches the stack to the Home page.
+        self.sidebar.set_selected("home")
+
         # Tell the user if the library was recovered from a backup, or could not
         # be read at all. Deferred so the dialog appears over the shown window.
         if self._repo.recovery_report.needs_notice:
@@ -1031,6 +1021,8 @@ class MainWindow(
         """Ensure pending saves are flushed before exit."""
         self._save_timer.stop()
         self._flush_save()
+        self._settings_save_timer.stop()
+        self._flush_settings()
         super().closeEvent(event)
 
     def _refresh_list(self) -> None:

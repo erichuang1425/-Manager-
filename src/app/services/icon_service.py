@@ -108,26 +108,63 @@ def _first_existing(paths: Iterable[str]) -> Optional[str]:
 
 
 @lru_cache(maxsize=2048)
-def _best_icon_path_cached(shortcut: str, backup: str, archive: str, compressed: str) -> str:
-    best = _first_existing([shortcut, backup, archive, compressed]) or (shortcut or backup or archive or compressed)
+def _best_icon_path_cached(
+    executable: str,
+    backup: str,
+    shortcut: str,
+    archive: str,
+    compressed: str,
+) -> str:
+    # Prefer the resolved executable. QFileIconProvider commonly returns the
+    # generic .lnk shell glyph for a shortcut, while the target carries the
+    # recognizable application icon the user expects.
+    ordered = [executable, backup, shortcut, archive, compressed]
+    best = _first_existing(ordered) or next((path for path in ordered if path), "")
     return best or ""
 
 
-def best_icon_path(game) -> str:
+def icon_path_candidates(game) -> tuple[str, ...]:
+    """Return unique icon-source candidates without touching the filesystem."""
+    values = (
+        getattr(game, "executable_path", "") or "",
+        getattr(game, "backup_target_path", "") or "",
+        getattr(game, "shortcut_path", "") or "",
+        getattr(game, "archive_folder_path", "") or "",
+        getattr(game, "compressed_archive_path", "") or "",
+    )
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        key = value.casefold()
+        if value and key not in seen:
+            seen.add(key)
+            result.append(value)
+    return tuple(result)
+
+
+def icon_path_for_game(game, *, check_exists: bool = True) -> str:
+    """Choose an icon source, optionally avoiding synchronous path probes.
+
+    Resolved executables are preferred over shortcuts, followed by archive
+    paths. This preserves the recognizable application icon instead of the
+    generic Windows shortcut glyph whenever target metadata is available.
     """
-    Best-effort icon path selection for a Game.
-    Order:
-      1) shortcut_path
-      2) backup_target_path (resolved exe/file)
-      3) archive_folder_path
-      4) compressed_archive_path
-    Returns empty string if none are present.
-    """
+    candidates = icon_path_candidates(game)
+    if not candidates:
+        return ""
+    if not check_exists:
+        return candidates[0]
+    executable = getattr(game, "executable_path", "") or ""
     shortcut = getattr(game, "shortcut_path", "") or ""
     backup = getattr(game, "backup_target_path", "") or ""
     archive = getattr(game, "archive_folder_path", "") or ""
     compressed = getattr(game, "compressed_archive_path", "") or ""
-    return _best_icon_path_cached(shortcut, backup, archive, compressed)
+    return _best_icon_path_cached(executable, backup, shortcut, archive, compressed)
+
+
+def best_icon_path(game) -> str:
+    """Backward-compatible filesystem-validated icon path lookup."""
+    return icon_path_for_game(game, check_exists=True)
 
 
 def pixmap_for_game(game, size: int = 32) -> QPixmap:
@@ -174,16 +211,18 @@ class IconLoaderThread(QThread):
         self.signals = _IconLoaderSignals()
         self._queue: Queue[tuple[str, int] | None] = Queue()
         self._stop = False
-        # Track paths already queued to avoid redundant work
-        self._pending: set[str] = set()
+        # Track exact requests so a 64px preview cannot accidentally consume a
+        # simultaneous 256px card request for the same path (or vice versa).
+        self._pending: set[tuple[str, int]] = set()
         self._lock = threading.Lock()
 
     def request(self, path: str, size: int) -> bool:
         """Enqueue an icon load request.  Returns False if already pending."""
+        key = (path, size)
         with self._lock:
-            if path in self._pending:
+            if key in self._pending:
                 return False
-            self._pending.add(path)
+            self._pending.add(key)
         self._queue.put((path, size))
         return True
 
@@ -233,13 +272,13 @@ class IconLoaderThread(QThread):
                 self.signals.icon_ready.emit(path, size, None)
             finally:
                 with self._lock:
-                    self._pending.discard(path)
+                    self._pending.discard((path, size))
 
 
 # Singleton loader + subscriber registry
 _icon_loader: IconLoaderThread | None = None
-# path -> list of callbacks;  callback signature: (path, QPixmap | None) -> None
-_icon_subscribers: dict[str, list[Callable]] = {}
+# (path, size) -> callbacks; callback signature: (path, QPixmap | None) -> None
+_icon_subscribers: dict[tuple[str, int], list[Callable]] = {}
 
 
 def _get_icon_loader() -> IconLoaderThread:
@@ -259,7 +298,7 @@ def _on_icon_ready(path: str, size: int, pm: object) -> None:
         # Also populate the async raw cache so sync lookups work on re-render
         if path not in _async_raw_cache:
             _async_raw_cache[path] = pixmap
-    callbacks = _icon_subscribers.pop(path, [])
+    callbacks = _icon_subscribers.pop((path, size), [])
     for cb in callbacks:
         try:
             cb(path, pixmap)
@@ -291,7 +330,7 @@ def request_icon_async(
         callback(path, cached)
         return
     # Register callback and submit to background thread
-    _icon_subscribers.setdefault(path, []).append(callback)
+    _icon_subscribers.setdefault((path, size), []).append(callback)
     loader = _get_icon_loader()
     loader.request(path, size)
 

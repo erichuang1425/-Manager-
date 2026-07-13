@@ -126,88 +126,90 @@ class CollectionMixin:
         if self._log_rate.allow("nav_change", 400):
             self._log.info("nav_change %s", kv(event="nav_change", key=key))
 
-        grid = getattr(self, "grid", None)
-        health = getattr(self, "health", None)
-        updates = getattr(self, "updates", None)
-        dashboard_cards = getattr(self, "dashboard_cards", None)
+        is_library_view = key == "all" or key.startswith("collection:")
 
-        if key == "health":
-            self.rename_collection_btn.setEnabled(False)
-            self.delete_collection_btn.setEnabled(False)
-            self.content_title.setText("Health Checks")
-            if grid:
-                grid.hide()
-            if dashboard_cards:
-                dashboard_cards.hide()
-            if health:
-                health.show()
-                health.set_games(self._all_games)
-                health.set_ignored(self._ignored_health)
-                self._settings["health_filter"] = health._filter_mode
-                self._settings["health_density"] = health._density
-            else:
-                if self._log_rate.allow("health_missing", 2000):
-                    self._log.warning("Health view missing during nav")
-            if updates:
-                updates.hide()
-            self._persist_settings()
-            return
-        if key == "updates":
-            self.rename_collection_btn.setEnabled(False)
-            self.delete_collection_btn.setEnabled(False)
-            self.content_title.setText("Updates")
-            if grid:
-                grid.hide()
-            if dashboard_cards:
-                dashboard_cards.hide()
-            if health:
-                health.hide()
-            if updates:
-                updates.show()
-                updates.set_games(self._all_games)
-            else:
-                if self._log_rate.allow("updates_missing", 2000):
-                    self._log.warning("Updates view missing during nav")
-            return
-
-        # library pages
-        if health:
-            health.hide()
-        if updates:
-            updates.hide()
-        if grid:
-            grid.show()
-        if dashboard_cards:
-            dashboard_cards.show()
-
-        if key == "all":
-            self.rename_collection_btn.setEnabled(False)
-            self.delete_collection_btn.setEnabled(False)
-            self._active_collection_id = None
-            self.content_title.setText("All Games")
-        elif key.startswith("collection:"):
-            self._active_collection_id = key.split(":", 1)[1]
-            c = self._get_collection(self._active_collection_id)
-            self.content_title.setText(c.name if c else "Collection")
+        # Resolve the target stack page from the nav key.
+        if is_library_view:
+            page = self.library_page
         else:
-            self._active_collection_id = None
+            page = {
+                "home": self.home_page,
+                "updates": self.updates,
+                "health": self.health,
+                "downloads": self.downloads,
+                "import": self.import_page,
+                "settings": self.settings_page,
+            }.get(key)
+        if page is None:
+            if self._log_rate.allow("nav_unknown", 2000):
+                self._log.warning("nav_change_unknown_key %s", kv(key=key))
+            return
 
-        c = self._get_collection(self._active_collection_id) if self._active_collection_id else None
-        is_collection = c is not None
-        self.rename_collection_btn.setEnabled(is_collection)
-        self.delete_collection_btn.setEnabled(is_collection)
+        self.page_stack.setCurrentWidget(page)
 
-        self._apply_search()
+        # Details splitter panel: shown on the library page (per saved prefs),
+        # hidden everywhere else — matching the previous behavior exactly.
+        if is_library_view:
+            self._apply_details_visibility()
+        else:
+            self._details_widget.hide()
+
+        if is_library_view:
+            if key == "all":
+                self._active_collection_id = None
+                self.content_title.setText("All Games")
+            else:  # collection:<id>
+                self._active_collection_id = key.split(":", 1)[1]
+                c = self._get_collection(self._active_collection_id)
+                self.content_title.setText(c.name if c else "Collection")
+
+            c = self._get_collection(self._active_collection_id) if self._active_collection_id else None
+            is_collection = c is not None
+            self.rename_collection_btn.setEnabled(is_collection)
+            self.delete_collection_btn.setEnabled(is_collection)
+            self._apply_search()
+            return
+
+        # Non-library pages: no active collection, refresh page-specific data.
+        self._active_collection_id = None
+        self.rename_collection_btn.setEnabled(False)
+        self.delete_collection_btn.setEnabled(False)
+
+        if key == "home":
+            self.home_page.refresh(self._all_games)
+        elif key == "updates":
+            self.updates.set_games(self._all_games)
+        elif key == "health":
+            self.health.set_games(self._all_games)
+            self.health.set_ignored(self._ignored_health)
+            self._settings["health_filter"] = self.health._filter_mode
+            self._settings["health_density"] = self.health._density
+            self._persist_settings()
+        elif key == "downloads":
+            self.downloads._refresh_list()
+        elif key == "import":
+            self.import_page.set_root_folder(self._root_folder)
+        elif key == "settings":
+            self.settings_page.set_values(self._settings_snapshot())
 
     def _rebuild_sidebar(self: "MainWindow", select_kind: str = "all", select_id: Optional[str] = None) -> None:
         selected_key = self._nav_key(select_kind, select_id)
+        from app.services.filter_utils import game_needs_update
+        updates_count = sum(1 for game in self._all_games if game_needs_update(game))
+        health_count = 0
+        if hasattr(self, "health"):
+            health_count = len(self.health._collect_issues(self._all_games))
+        downloads_count = 0
+        if hasattr(self, "downloads"):
+            downloads_count = len(self.downloads._manager.get_all_items())
         self.sidebar.set_games(self._all_games)
         self.sidebar.populate(
             all_count=len(self._all_games),
-            updates_count=0,
-            health_count=0,
+            updates_count=updates_count,
+            health_count=health_count,
             collections=self._collections,
             selected_key=selected_key,
+            downloads_count=downloads_count,
         )
 
     def _save_bundle(self: "MainWindow") -> None:

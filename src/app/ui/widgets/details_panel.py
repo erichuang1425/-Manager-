@@ -19,6 +19,7 @@ from app.ui.theme import (
 from app.ui.icons import AppIcons
 from app.ui.typography import get_scale, title_style, caption_style, label_style
 from app.ui.widgets.game_grid.display_utils import relative_time
+from app.ui.widgets.game_artwork import GameArtwork
 from app.ui.widgets.controls import StarRating, StatusChips, TagEditor
 
 
@@ -31,6 +32,10 @@ def _fmt_dt(dt: Optional[datetime]) -> str:
 class DetailsPanel(QWidget):
     play_clicked = Signal(str)
     game_changed = Signal(str)
+    artwork_capture_requested = Signal(str)
+    artwork_paste_requested = Signal(str)
+    artwork_choose_requested = Signal(str)
+    artwork_remove_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -89,6 +94,81 @@ class DetailsPanel(QWidget):
         self.play_btn.setMinimumHeight(36)
         self.play_btn.clicked.connect(self._emit_play)
         layout.addWidget(self.play_btn)
+
+        layout.addSpacing(theme.spacing_lg)
+
+        # == Section: Card artwork ==
+        layout.addWidget(self._section_divider(theme))
+        layout.addWidget(self._section_header("CARD ARTWORK", theme))
+
+        artwork_container = QFrame()
+        artwork_container.setStyleSheet(
+            f"QFrame {{ background: {theme.surface_alt.name(QColor.HexArgb)}; "
+            f"border-radius: {theme.radius_sm}px; border: none; }}"
+        )
+        artwork_layout = QVBoxLayout(artwork_container)
+        artwork_layout.setContentsMargins(
+            theme.spacing_sm, theme.spacing_sm, theme.spacing_sm, theme.spacing_sm,
+        )
+        artwork_layout.setSpacing(theme.spacing_sm)
+
+        self.artwork_preview = GameArtwork(width=184, height=104)
+        artwork_layout.addWidget(self.artwork_preview, 0, Qt.AlignHCenter)
+
+        artwork_help = QLabel(
+            "Capture opens Windows Snipping Tool. Select the game area and it "
+            "will become this card's background."
+        )
+        artwork_help.setWordWrap(True)
+        artwork_help.setStyleSheet(
+            f"font-size: 11px; color: {theme.text_muted.name()}; "
+            "background: transparent; border: none;"
+        )
+        artwork_layout.addWidget(artwork_help)
+
+        artwork_primary = QHBoxLayout()
+        artwork_primary.setSpacing(theme.spacing_xs)
+        self.capture_artwork_btn = QPushButton("Capture")
+        self.paste_artwork_btn = QPushButton("Paste")
+        self.capture_artwork_btn.setStyleSheet(primary_btn_style(theme))
+        self.paste_artwork_btn.setStyleSheet(secondary_btn_style(theme))
+        artwork_primary.addWidget(self.capture_artwork_btn, 1)
+        artwork_primary.addWidget(self.paste_artwork_btn, 1)
+        artwork_layout.addLayout(artwork_primary)
+
+        artwork_secondary = QHBoxLayout()
+        artwork_secondary.setSpacing(theme.spacing_xs)
+        self.choose_artwork_btn = QPushButton("Choose image")
+        self.remove_artwork_btn = QPushButton("Remove")
+        self.choose_artwork_btn.setStyleSheet(ghost_btn_style(theme))
+        self.remove_artwork_btn.setStyleSheet(ghost_btn_style(theme))
+        artwork_secondary.addWidget(self.choose_artwork_btn, 1)
+        artwork_secondary.addWidget(self.remove_artwork_btn, 1)
+        artwork_layout.addLayout(artwork_secondary)
+
+        for button in (
+            self.capture_artwork_btn, self.paste_artwork_btn,
+            self.choose_artwork_btn, self.remove_artwork_btn,
+        ):
+            button.setCursor(Qt.PointingHandCursor)
+            button.setEnabled(False)
+        self.capture_artwork_btn.setToolTip("Minimize the library and capture a game area")
+        self.paste_artwork_btn.setToolTip("Use an image currently on the clipboard")
+        self.choose_artwork_btn.setToolTip("Choose a PNG, JPEG, WebP, or BMP image")
+        self.remove_artwork_btn.setToolTip("Return to the generated title background")
+        self.capture_artwork_btn.clicked.connect(
+            lambda: self._emit_artwork_request(self.artwork_capture_requested)
+        )
+        self.paste_artwork_btn.clicked.connect(
+            lambda: self._emit_artwork_request(self.artwork_paste_requested)
+        )
+        self.choose_artwork_btn.clicked.connect(
+            lambda: self._emit_artwork_request(self.artwork_choose_requested)
+        )
+        self.remove_artwork_btn.clicked.connect(
+            lambda: self._emit_artwork_request(self.artwork_remove_requested)
+        )
+        layout.addWidget(artwork_container)
 
         layout.addSpacing(theme.spacing_lg)
 
@@ -262,6 +342,7 @@ class DetailsPanel(QWidget):
         # Register section widgets for collapsible toggling
         # Each layout/widget added after a section header belongs to that section
         self._register_section_widget("STATUS & RATING", sr_container)
+        self._register_section_widget("CARD ARTWORK", artwork_container)
         self._register_section_widget("TAGS", self.tags)
         self._register_section_widget("NOTES", self.notes)
         self._register_section_widget("SOURCE", self.source_url)
@@ -334,12 +415,15 @@ class DetailsPanel(QWidget):
             self.title.setText("Select a game")
             self.subtitle.setText("")
             self.play_btn.setEnabled(False)
+            self.artwork_preview.set_game(None)
             for w in (self.status, self.rating, self.tags, self.notes,
                       self.source_url, self.installed_ver,
                       self.archive_folder, self.compressed_path,
                       self.pick_archive_folder, self.pick_compressed,
                       self.open_archive_folder, self.open_compressed,
-                      self.open_source_btn):
+                      self.open_source_btn, self.capture_artwork_btn,
+                      self.paste_artwork_btn, self.choose_artwork_btn,
+                      self.remove_artwork_btn):
                 w.setEnabled(False)
             self.launcher_info.setText("")
             self.last_played.setText("")
@@ -357,6 +441,11 @@ class DetailsPanel(QWidget):
         self.subtitle.setText("  \u00B7  ".join(parts))
 
         self.play_btn.setEnabled(True)
+        self.artwork_preview.set_game(game)
+        self.capture_artwork_btn.setEnabled(True)
+        self.paste_artwork_btn.setEnabled(True)
+        self.choose_artwork_btn.setEnabled(True)
+        self.remove_artwork_btn.setEnabled(bool(game.card_artwork_path))
 
         self.status.setEnabled(True)
         self.status.set_status(game.status)
@@ -424,6 +513,10 @@ class DetailsPanel(QWidget):
     def _emit_play(self) -> None:
         if self._game is not None:
             self.play_clicked.emit(self._game.game_id)
+
+    def _emit_artwork_request(self, signal: Signal) -> None:
+        if self._game is not None:
+            signal.emit(self._game.game_id)
 
     def _on_changed(self) -> None:
         if self._loading:

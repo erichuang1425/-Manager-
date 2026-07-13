@@ -22,11 +22,13 @@ from typing import List, Optional, Tuple
 from PySide6.QtCore import Qt, QRect, QRectF, QSize, QTimer
 from PySide6.QtGui import (
     QColor, QPainter, QPixmap, QPixmapCache, QFont, QFontMetrics, QPainterPath,
+    QLinearGradient, QBrush,
 )
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle
 
 from app.services import (
-    request_icon_async,
+    icon_path_for_game, request_icon_async,
+    request_artwork_async,
     parse_version, compare_versions,
 )
 from app.services.version_parser import CompareResult
@@ -35,7 +37,12 @@ from app.ui.icons import AppIcons
 from app.logging_utils import get_logger
 
 from .model import GameRole
-from .display_utils import status_label, relative_time
+from .display_utils import (
+    status_label, relative_time,
+    tile_initials, tile_gradient_hsl, tile_text_is_light,
+    native_icon_size, rating_is_set, status_is_default,
+    CJK_FONT_FAMILIES, cover_crop_rect,
+)
 
 _log = get_logger("ui.game_card_delegate")
 
@@ -157,12 +164,7 @@ def _icon_candidate(game) -> str:
     paint() must never do that, so mirror the old card: take the first
     non-empty candidate and let the background loader resolve/fall back.
     """
-    return (
-        (getattr(game, "shortcut_path", "") or "")
-        or (getattr(game, "backup_target_path", "") or "")
-        or (getattr(game, "archive_folder_path", "") or "")
-        or (getattr(game, "compressed_archive_path", "") or "")
-    )
+    return icon_path_for_game(game, check_exists=False)
 
 
 def _update_available(game) -> bool:
@@ -186,8 +188,106 @@ def _update_available(game) -> bool:
     return result
 
 
-def build_geometry(rect: QRect, game, m: CardMetrics, multi_select: bool) -> CardGeometry:
-    """Compute all sub-rects for a card within ``rect``."""
+def _paint_generated_tile(painter: QPainter, icon_path: QPainterPath, rect: QRect, title: str) -> None:
+    """Fill the cover area with a deterministic gradient + the title's initials.
+
+    Used when a game has no artwork or only a tiny shortcut icon.  Colours are
+    derived from a stable hash of the title (see ``display_utils``) so a tile is
+    consistent across runs and varied across the grid.
+    """
+    (h1, s1, l1), (h2, s2, l2) = tile_gradient_hsl(title)
+    grad = QLinearGradient(
+        float(rect.left()), float(rect.top()),
+        float(rect.left()), float(rect.bottom()),
+    )
+    grad.setColorAt(0.0, QColor.fromHslF(h1, s1, l1))
+    grad.setColorAt(1.0, QColor.fromHslF(h2, s2, l2))
+    painter.fillPath(icon_path, QBrush(grad))
+
+    painter.setPen(QColor(238, 240, 248) if tile_text_is_light(title) else QColor(20, 22, 30))
+    f = QFont(painter.font())
+    if hasattr(f, "setFamilies"):
+        f.setFamilies(list(dict.fromkeys([f.family(), *CJK_FONT_FAMILIES])))
+    f.setPixelSize(max(24, round(rect.height() * 0.4)))
+    f.setWeight(QFont.Bold)
+    painter.setFont(f)
+    painter.drawText(rect, Qt.AlignCenter, tile_initials(title))
+
+
+def _paint_custom_artwork(
+    painter: QPainter,
+    icon_path: QPainterPath,
+    rect: QRect,
+    pixmap: QPixmap,
+) -> None:
+    """Center-crop custom artwork into the rounded cover area."""
+    if pixmap.isNull():
+        return
+    sx, sy, sw, sh = cover_crop_rect(
+        pixmap.width(), pixmap.height(), rect.width(), rect.height(),
+    )
+    if not sw or not sh:
+        return
+    painter.save()
+    painter.setClipPath(icon_path)
+    painter.drawPixmap(QRectF(rect), pixmap, QRectF(sx, sy, sw, sh))
+    painter.restore()
+
+
+def _paint_identity_icon(
+    painter: QPainter,
+    rect: QRect,
+    pixmap: QPixmap,
+    theme,
+) -> None:
+    """Paint the original app icon as a native-size identity badge.
+
+    The generated title tile remains the card artwork. The executable/shortcut
+    icon is layered at the lower-left and is only reduced, never enlarged.
+    """
+    if pixmap.isNull():
+        return
+    dpr = max(1.0, float(pixmap.devicePixelRatio()))
+    source_w = pixmap.width() / dpr
+    source_h = pixmap.height() / dpr
+    max_extent = min(64, max(36, round(rect.height() * 0.40)))
+    icon_w, icon_h = native_icon_size(source_w, source_h, max_extent)
+    if not icon_w or not icon_h:
+        return
+
+    pad = 7
+    badge_w = max(32, icon_w + pad * 2)
+    badge_h = max(32, icon_h + pad * 2)
+    badge = QRectF(
+        rect.left() + 10,
+        rect.bottom() - badge_h - 10,
+        badge_w,
+        badge_h,
+    )
+    painter.save()
+    painter.setPen(theme.card_border)
+    painter.setBrush(theme.surface_overlay or theme.surface)
+    painter.drawRoundedRect(badge, 10, 10)
+    target = QRectF(
+        badge.center().x() - icon_w / 2,
+        badge.center().y() - icon_h / 2,
+        icon_w,
+        icon_h,
+    )
+    painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+    painter.restore()
+
+
+def build_geometry(
+    rect: QRect, game, m: CardMetrics, multi_select: bool, hovered: bool = False,
+) -> CardGeometry:
+    """Compute all sub-rects for a card within ``rect``.
+
+    ``hovered`` gates progressive-disclosure zones: rating stars and the status
+    chip only become hit targets when the game carries that data OR the card is
+    hovered.  The view passes ``hovered=True`` when hit-testing (a click always
+    lands on the card under the cursor), so painted and clickable regions match.
+    """
     x, y, w = rect.x(), rect.y(), rect.width()
     body = QRect(rect)
 
@@ -203,12 +303,18 @@ def build_geometry(rect: QRect, game, m: CardMetrics, multi_select: bool) -> Car
 
     meta = QRect(cx, cy, cw, m.meta_h)
 
-    # Stars laid out at the left of the meta row.
+    # Stars laid out at the left of the meta row.  They are only interactive /
+    # painted when the game is rated, or on hover (so click-to-rate stays
+    # discoverable on unrated cards).  ``sx`` still advances through all five
+    # slots regardless, so the relative-time text keeps its position exactly.
     star_sz = max(12, m.meta_h - 2)
+    show_stars = hovered or rating_is_set(game.rating)
     stars: List[Tuple[int, QRect]] = []
     sx = cx
     for i in range(5):
-        stars.append(((i + 1) * 2, QRect(sx, cy + (m.meta_h - star_sz) // 2, star_sz, star_sz)))
+        star_rect = QRect(sx, cy + (m.meta_h - star_sz) // 2, star_sz, star_sz)
+        if show_stars:
+            stars.append(((i + 1) * 2, star_rect))
         sx += star_sz + 1
     time_rect = QRect(sx + 6, cy, cw - (sx + 6 - cx), m.meta_h)
     cy += m.meta_h
@@ -219,11 +325,13 @@ def build_geometry(rect: QRect, game, m: CardMetrics, multi_select: bool) -> Car
         chip_y = cy
         chip_h = m.chip_h
         chx = cx
-        # status chip
-        st_label = status_label(game.status)
-        st_w = min(cw, 14 + int(len(st_label) * m.chip_fs * 0.62))
-        chips.append(("status", game.status, QRect(chx, chip_y, st_w, chip_h)))
-        chx += st_w + 6
+        # status chip — hidden at rest for default-status (backlog) cards, shown
+        # on hover.  Remaining chips left-pack into the freed space.
+        if hovered or not status_is_default(game.status):
+            st_label = status_label(game.status)
+            st_w = min(cw, 14 + int(len(st_label) * m.chip_fs * 0.62))
+            chips.append(("status", game.status, QRect(chx, chip_y, st_w, chip_h)))
+            chx += st_w + 6
         # up to 2 tags
         for tag in (game.tags or [])[:2]:
             if chx >= x + w - m.pad:
@@ -271,9 +379,11 @@ class GameCardDelegate(QStyledItemDelegate):
         super().__init__(view)
         self._view = view
         self.metrics = CardMetrics.compute(240, "comfortable", "normal")
-        # Dedupe async icon requests (keyed by path) so paint doesn't stack
-        # callbacks while a load is pending.
+        # Dedupe per rendered cache entry. The shared icon service separately
+        # dedupes the actual (path, size) load while retaining every subscriber.
         self._icon_pending: set[str] = set()
+        self._artwork_pending: set[str] = set()
+        self._artwork_failed: set[str] = set()
         # Coalesce viewport repaints when icons arrive.
         self._repaint_timer = QTimer(view)
         self._repaint_timer.setSingleShot(True)
@@ -313,20 +423,58 @@ class GameCardDelegate(QStyledItemDelegate):
         # the callback synchronously when the icon is already in the service's
         # async cache and queues a background load otherwise — so paint never
         # blocks on QFileIconProvider for an uncached (possibly slow) file.
-        if path not in self._icon_pending:
-            self._icon_pending.add(path)
+        if key not in self._icon_pending:
+            self._icon_pending.add(key)
             gid = game.game_id
 
-            def _ready(p: str, pixmap, _gid=gid, _key=key, _dpr=dpr, _path=path):
-                self._icon_pending.discard(_path)
+            def _ready(p: str, pixmap, _gid=gid, _key=key, _dpr=dpr):
+                self._icon_pending.discard(_key)
                 if pixmap is not None and not pixmap.isNull():
-                    pixmap.setDevicePixelRatio(_dpr)
-                    QPixmapCache.insert(_key, pixmap)
+                    # Never mutate the service's shared cached pixmap: another
+                    # screen may request the same source at a different DPR.
+                    rendered = QPixmap(pixmap)
+                    rendered.setDevicePixelRatio(_dpr)
+                    QPixmapCache.insert(_key, rendered)
                     self._dirty_ids.add(_gid)
                     if not self._repaint_timer.isActive():
                         self._repaint_timer.start()
 
             request_icon_async(path, target_px, _ready)
+        return None
+
+    @staticmethod
+    def _artwork_key(game_id: str, path: str, width: int, height: int, dpr: float) -> str:
+        return f"gcard-art:{game_id}:{path}:{width}x{height}:{dpr:.2f}"
+
+    def _artwork_pixmap(
+        self, game, width: int, height: int, dpr: float,
+    ) -> Optional[QPixmap]:
+        path = getattr(game, "card_artwork_path", "") or ""
+        if not path:
+            return None
+        key = self._artwork_key(game.game_id, path, width, height, dpr)
+        cached = QPixmapCache.find(key)
+        if cached is not None:
+            return cached
+        if key in self._artwork_failed:
+            return None
+        if key not in self._artwork_pending:
+            self._artwork_pending.add(key)
+            gid = game.game_id
+
+            def _ready(loaded_path: str, image, _gid=gid, _key=key, _dpr=dpr):
+                self._artwork_pending.discard(_key)
+                if loaded_path != path or image is None or image.isNull():
+                    self._artwork_failed.add(_key)
+                    return
+                rendered = QPixmap.fromImage(image)
+                rendered.setDevicePixelRatio(_dpr)
+                QPixmapCache.insert(_key, rendered)
+                self._dirty_ids.add(_gid)
+                if not self._repaint_timer.isActive():
+                    self._repaint_timer.start()
+
+            request_artwork_async(path, width, height, _ready)
         return None
 
     def _flush_repaint(self) -> None:
@@ -356,7 +504,7 @@ class GameCardDelegate(QStyledItemDelegate):
         multi = view.is_multi_select()
         focused = (index == view.currentIndex()) and view.hasFocus()
 
-        geo = build_geometry(option.rect, game, m, multi)
+        geo = build_geometry(option.rect, game, m, multi, hovered)
 
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -393,23 +541,24 @@ class GameCardDelegate(QStyledItemDelegate):
         icon_path.closeSubpath()
         painter.fillPath(icon_path, theme.surface_alt)
 
-        # icon pixmap
+        # The title-derived tile is the cover artwork. The original executable
+        # or shortcut icon remains visible as a small identity badge, where its
+        # native resolution stays crisp instead of being stretched card-wide.
         dpr = float(option.widget.devicePixelRatioF()) if option.widget else 1.0
         target_px = min(512, max(96, round(max(geo.icon.width(), geo.icon.height()) * dpr)))
         pm = self._icon_pixmap(game, target_px, dpr)
+        artwork = self._artwork_pixmap(
+            game,
+            max(1, round(geo.icon.width() * dpr)),
+            max(1, round(geo.icon.height() * dpr)),
+            dpr,
+        )
+        if artwork is not None and not artwork.isNull():
+            _paint_custom_artwork(painter, icon_path, geo.icon, artwork)
+        else:
+            _paint_generated_tile(painter, icon_path, geo.icon, game.title)
         if pm is not None and not pm.isNull():
-            painter.save()
-            painter.setClipPath(icon_path)
-            pw = pm.width() / pm.devicePixelRatio()
-            ph = pm.height() / pm.devicePixelRatio()
-            avail = geo.icon.adjusted(6, 6, -6, -6)
-            scale = min(avail.width() / pw, avail.height() / ph) if pw and ph else 1.0
-            scale = min(scale, 1.0) if max(pw, ph) < 64 else scale
-            dw, dh = pw * scale, ph * scale
-            dx = geo.icon.x() + (geo.icon.width() - dw) / 2
-            dy = geo.icon.y() + (geo.icon.height() - dh) / 2
-            painter.drawPixmap(QRectF(dx, dy, dw, dh), pm, QRectF(0, 0, pm.width(), pm.height()))
-            painter.restore()
+            _paint_identity_icon(painter, geo.icon, pm, theme)
 
         # --- accent status strip ---
         sc = status_color(theme, game.status)
@@ -425,15 +574,16 @@ class GameCardDelegate(QStyledItemDelegate):
         elided = fm.elidedText(game.title, Qt.ElideRight, geo.title.width())
         painter.drawText(geo.title, Qt.AlignLeft | Qt.AlignVCenter, elided)
 
-        # --- rating stars ---
-        star_font = QFont(painter.font())
-        star_font.setPixelSize(max(11, m.meta_fs + 1))
-        painter.setFont(star_font)
-        rating = game.rating or 0
-        filled = max(0, min(5, round(rating / 2)))
-        for i, (_value, r) in enumerate(geo.stars):
-            painter.setPen(theme.accent if i < filled else theme.text_muted)
-            painter.drawText(r, Qt.AlignCenter, "★" if i < filled else "☆")
+        # --- rating stars (only present when rated or hovered) ---
+        if geo.stars:
+            star_font = QFont(painter.font())
+            star_font.setPixelSize(max(11, m.meta_fs + 1))
+            painter.setFont(star_font)
+            rating = game.rating or 0
+            filled = max(0, min(5, round(rating / 2)))
+            for i, (_value, r) in enumerate(geo.stars):
+                painter.setPen(theme.accent if i < filled else theme.text_muted)
+                painter.drawText(r, Qt.AlignCenter, "★" if i < filled else "☆")
 
         # --- relative time (muted) ---
         if geo.time_rect is not None:

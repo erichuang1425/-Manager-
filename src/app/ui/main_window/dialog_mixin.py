@@ -36,17 +36,10 @@ class DialogMixin:
         self._apply_details_visibility(animate=True)
 
     def _open_preferences(self: "MainWindow") -> None:
-        dlg = PreferencesDialog(
-            self,
-            view_mode=self._view_mode,
-            details_on_launch=self._details_on_launch,
-            details_on_selection=self._details_on_selection,
-            theme=self._theme,
-            font_family=self._font_family,
-            font_scale=self._font_scale,
-        )
-        dlg.apply_clicked.connect(self._apply_settings_values)
-        dlg.exec()
+        """Navigate to the full settings page."""
+        if hasattr(self, "settings_page"):
+            self.settings_page.set_values(self._settings_snapshot())
+            self.sidebar.set_selected("settings")
 
     def _open_theme_editor(self: "MainWindow") -> None:
         """Open the theme editor dialog."""
@@ -182,6 +175,7 @@ class DialogMixin:
 
     def _apply_settings_values(self: "MainWindow", vals: dict) -> None:
         old_view = self._view_mode
+        old_browse = self.grid.get_browse_mode()
         old_theme = self._theme
         old_font = self._font_family
         old_scale = self._font_scale
@@ -192,6 +186,10 @@ class DialogMixin:
         self._theme = vals.get("theme", self._theme)
         self._font_family = vals.get("font_family", self._font_family)
         self._font_scale = vals.get("font_scale", self._font_scale)
+        self._focus_mode = vals.get("focus_mode", self._focus_mode)
+        self._details_visible = vals.get("details_visible", self._details_visible)
+        browse_mode = vals.get("browse_mode", old_browse)
+        page_size = int(vals.get("page_size", self._config.page_size))
 
         for key, val in [
             ("view_mode", self._view_mode),
@@ -200,6 +198,10 @@ class DialogMixin:
             ("theme", self._theme),
             ("font_family", self._font_family),
             ("font_scale", self._font_scale),
+            ("focus_mode", self._focus_mode),
+            ("details_visible", self._details_visible),
+            ("browse_mode", browse_mode),
+            ("page_size", page_size),
         ]:
             self._settings[key] = val
         self._persist_settings()
@@ -211,13 +213,24 @@ class DialogMixin:
             self.grid.set_view_mode(self._view_mode)
             self._update_view_mode_buttons()
 
+        self.grid.set_page_size(page_size)
+        if browse_mode != old_browse:
+            self.grid.set_browse_mode(browse_mode)
+        self._update_browse_mode_buttons()
+
         if vals.get("reset_layout"):
             self._reset_layout()
 
-        if self._details_on_launch:
-            self._details_visible = True
-            self.details_toggle.setChecked(True)
+        self.focus_btn.setChecked(self._focus_mode)
+        self.details_toggle.setChecked(self._details_visible)
+        self._apply_focus_mode()
+        if not self._focus_mode:
             self._apply_details_visibility()
+
+        if hasattr(self, "settings_page"):
+            self.settings_page.set_values(self._settings_snapshot())
+            self.settings_page.show_saved()
+        show_success("Settings saved")
 
         self._guard_top_level_windows()
 
